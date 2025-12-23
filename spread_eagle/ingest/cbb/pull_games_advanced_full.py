@@ -30,7 +30,7 @@ def fetch_team_stats(season: int, season_type: str | None = None) -> List[Dict[s
 
     offset = 0
     out: List[Dict[str, Any]] = []
-    seen_ids: set = set()
+    seen_keys: set = set()
     page_num = 0
 
     while True:
@@ -43,26 +43,12 @@ def fetch_team_stats(season: int, season_type: str | None = None) -> List[Dict[s
         if season_type:
             params["seasonType"] = season_type
 
-        url = f"{BASE_URL}/games/teams"
-        start_time = time.time()
-        print(
-            f"      -> GET {url} season={season} type={season_type or 'all'} "
-            f"offset={offset} limit={PAGE_SIZE}"
-        )
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=60)
-        except Exception as exc:
-            elapsed = time.time() - start_time
-            print(f"      !! request failed after {elapsed:.2f}s: {exc}")
-            break
-        elapsed = time.time() - start_time
-        print(
-            f"         status={resp.status_code} elapsed={elapsed:.2f}s "
-            f"len(body)={len(resp.content)}"
+        resp = requests.get(
+            f"{BASE_URL}/games/teams", headers=headers, params=params, timeout=60
         )
 
         if resp.status_code != 200:
-            print(f"      ERROR: {resp.status_code} - {resp.text[:400]}")
+            print(f"      ERROR: {resp.status_code} - {resp.text[:200]}")
             break
 
         page = resp.json()
@@ -71,14 +57,14 @@ def fetch_team_stats(season: int, season_type: str | None = None) -> List[Dict[s
         if page_count == 0:
             break
 
-        # Dedupe by game_id + team_id combo
-        new_ids = {(r.get("game_id"), r.get("team_id")) for r in page 
-                   if r.get("game_id") and r.get("team_id")}
-        if new_ids and new_ids.issubset(seen_ids):
+        # Dedupe by gameId + teamId combo
+        new_keys = {(r.get("gameId"), r.get("teamId")) for r in page
+                   if r.get("gameId") and r.get("teamId")}
+        if new_keys and new_keys.issubset(seen_keys):
             break
 
         out.extend(page)
-        seen_ids.update(new_ids)
+        seen_keys.update(new_keys)
 
         if page_count < PAGE_SIZE:
             break
@@ -93,7 +79,7 @@ def dedupe_by_game_team(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     out = []
     for r in records:
-        key = (r.get("game_id"), r.get("team_id"))
+        key = (r.get("gameId"), r.get("teamId"))
         if key not in seen:
             out.append(r)
             seen.add(key)
