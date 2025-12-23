@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.local
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+# Large model artifacts
+*.pkl
+
+# Build/output and local data
+data/
+ui/node_modules/
+ui/.next/
+ui/.turbo/

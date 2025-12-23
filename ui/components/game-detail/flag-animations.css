@@ -1,0 +1,61 @@
+/* American flag waving animation */
+@keyframes flag-wave {
+  0%, 100% {
+    transform: perspective(1000px) rotateY(0deg) skewY(0deg);
+  }
+  25% {
+    transform: perspective(1000px) rotateY(1deg) skewY(0.5deg);
+  }
+  50% {
+    transform: perspective(1000px) rotateY(0deg) skewY(0deg);
+  }
+  75% {
+    transform: perspective(1000px) rotateY(-1deg) skewY(-0.5deg);
+  }
+}
+
+@keyframes stripe-wave {
+  0%, 100% {
+    transform: scaleY(1) translateY(0);
+  }
+  50% {
+    transform: scaleY(1.02) translateY(-1px);
+  }
+}
+
+@keyframes star-twinkle {
+  0%, 100% {
+    opacity: 0.5;
+    text-shadow: 0 0 10px rgba(255,255,255,0.5);
+  }
+  50% {
+    opacity: 0.7;
+    text-shadow: 0 0 15px rgba(255,255,255,0.8);
+  }
+}
+
+@keyframes canton-glow {
+  0%, 100% {
+    box-shadow: inset 0 0 60px rgba(30, 58, 138, 0.3);
+  }
+  50% {
+    box-shadow: inset 0 0 80px rgba(30, 58, 138, 0.4);
+  }
+}
+
+.animate-flag-wave {
+  animation: flag-wave 8s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+.animate-stripe-wave {
+  animation: stripe-wave 4s ease-in-out infinite;
+}
+
+.animate-star-twinkle {
+  animation: star-twinkle 3s ease-in-out infinite;
+}
+
+.animate-canton-glow {
+  animation: canton-glow 5s ease-in-out infinite;
+}
