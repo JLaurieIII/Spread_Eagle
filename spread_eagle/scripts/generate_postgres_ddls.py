@@ -61,7 +61,13 @@ def _infer_type(values: Iterable[str]) -> str:
     return "TEXT"
 
 
-def infer_table_ddl(csv_path: Path, sample_rows: int | None = 5000, delimiter: str = ",") -> str:
+def infer_table_ddl(
+    csv_path: Path,
+    sample_rows: int | None = 5000,
+    delimiter: str = ",",
+    schema: str | None = None,
+    table_name_override: str | None = None,
+) -> str:
     """Read CSV header/sample rows and return a CREATE TABLE statement."""
     df = pd.read_csv(
         csv_path,
@@ -78,9 +84,11 @@ def infer_table_ddl(csv_path: Path, sample_rows: int | None = 5000, delimiter: s
         inferred = _infer_type(df[col].dropna().astype(str).tolist())
         column_types.append((col, inferred))
 
-    table_name = sanitize_table_name(csv_path.stem)
+    table_name = table_name_override or sanitize_table_name(csv_path.stem)
+    schema_prefix = f"{quote_ident(schema)}." if schema else ""
+
     columns_sql = ",\n".join(f"    {quote_ident(name)} {col_type}" for name, col_type in column_types)
-    return f"CREATE TABLE IF NOT EXISTS {quote_ident(table_name)} (\n{columns_sql}\n);"
+    return f"CREATE TABLE IF NOT EXISTS {schema_prefix}{quote_ident(table_name)} (\n{columns_sql}\n);"
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +111,21 @@ def parse_args() -> argparse.Namespace:
         default=",",
         help="CSV delimiter. Default: ','",
     )
+    parser.add_argument(
+        "--schema",
+        default=None,
+        help="Optional schema name to prefix the table.",
+    )
+    parser.add_argument(
+        "--table-name",
+        default=None,
+        help="Override table name (only valid when processing a single file).",
+    )
+    parser.add_argument(
+        "--database",
+        default=None,
+        help="Optional database name (for informational comment only; Postgres CREATE TABLE does not include it).",
+    )
     return parser.parse_args()
 
 
@@ -110,15 +133,33 @@ def main() -> None:
     args = parse_args()
     paths: List[Path] = []
     for pattern in args.paths:
-        matched = list(Path().glob(pattern))
+        p = Path(pattern)
+        if p.is_dir():
+            matched = list(p.glob("*.csv"))
+        else:
+            matched = list(Path().glob(pattern))
         if matched:
             paths.extend(matched)
         else:
             raise FileNotFoundError(f"No files matched pattern: {pattern}")
 
+    if args.table_name and len(paths) != 1:
+        raise ValueError("--table-name can only be used when exactly one file is provided")
+
     for csv_file in paths:
-        ddl = infer_table_ddl(csv_file, sample_rows=args.sample_rows, delimiter=args.delimiter)
-        print(f"-- {csv_file}")
+        ddl = infer_table_ddl(
+            csv_file,
+            sample_rows=args.sample_rows,
+            delimiter=args.delimiter,
+            schema=args.schema,
+            table_name_override=args.table_name,
+        )
+        print(f"-- file: {csv_file.resolve()}")
+        if args.database:
+            print(f"-- database: {args.database}")
+        if args.schema:
+            print(f"-- schema: {args.schema}")
+        print(f"-- table: {args.table_name or sanitize_table_name(csv_file.stem)}")
         print(ddl)
         print()
 
