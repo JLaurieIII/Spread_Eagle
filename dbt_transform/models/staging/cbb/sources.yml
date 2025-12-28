@@ -1,0 +1,71 @@
+version: 2
+
+sources:
+  - name: cbb_raw
+    description: "Raw college basketball data from API ingestion"
+    database: spread_eagle
+    schema: cbb
+    tables:
+      - name: games
+        description: "Game results with home/away scores and metadata"
+        columns:
+          - name: id
+            description: "Primary key - game ID from API"
+            tests:
+              - unique
+              - not_null
+          - name: home_points
+            description: "Final home team score"
+          - name: away_points
+            description: "Final away team score"
+          - name: start_date
+            description: "Game start timestamp"
+
+      - name: betting_lines
+        description: "Betting lines from sportsbooks (may have multiple rows per game)"
+        columns:
+          - name: id
+            description: "Primary key - line record ID"
+            tests:
+              - unique
+              - not_null
+          - name: game_id
+            description: "Foreign key to games table"
+          - name: spread
+            description: "Closing spread (negative = home favored)"
+          - name: over_under
+            description: "Closing total points line"
+          - name: home_score
+            description: "Final home score (denormalized)"
+          - name: away_score
+            description: "Final away score (denormalized)"
+
+      - name: game_team_stats
+        description: "Per-game team statistics (two rows per game)"
+        columns:
+          - name: id
+            description: "Primary key"
+            tests:
+              - unique
+              - not_null
+          - name: game_id
+            description: "Foreign key to games"
+          - name: team_id
+            description: "Team ID"
+          - name: is_home
+            description: "True if this is the home team"
+
+      - name: teams
+        description: "Team reference data"
+        columns:
+          - name: id
+            description: "Primary key - team ID"
+            tests:
+              - unique
+              - not_null
+
+      - name: conferences
+        description: "Conference reference data"
+
+      - name: venues
+        description: "Venue reference data"
