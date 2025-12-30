@@ -6,9 +6,36 @@ class Settings(BaseSettings):
     ENV: str = "dev"
     DATABASE_URL: PostgresDsn = "postgresql://user:pass@localhost:5432/spread_eagle"
 
+    # Database settings
+    DB_HOST: str = "spread-eagle-db.cluster-cbwyw8ky62xm.us-east-2.rds.amazonaws.com"
+    DB_PORT: int = 5432
+    DB_NAME: str = "postgres"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = ""
+
     # API Keys
     CFB_API_KEY: str | None = None
     CBB_API_KEY: str | None = None
+
+    @property
+    def db_host(self) -> str:
+        return self.DB_HOST
+
+    @property
+    def db_port(self) -> int:
+        return self.DB_PORT
+
+    @property
+    def db_name(self) -> str:
+        return self.DB_NAME
+
+    @property
+    def db_user(self) -> str:
+        return self.DB_USER
+
+    @property
+    def db_password(self) -> str:
+        return self.DB_PASSWORD
 
     @property
     def cfb_api_key(self) -> str:
