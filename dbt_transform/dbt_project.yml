@@ -1,0 +1,41 @@
+name: 'spread_eagle'
+version: '1.0.0'
+config-version: 2
+
+profile: 'spread_eagle'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+vars:
+  # Default rolling window sizes
+  rolling_windows: [3, 5, 10, 20]
+  # Teaser point values to evaluate
+  teaser_points: [6, 7, 8, 10]
+
+models:
+  spread_eagle:
+    staging:
+      +materialized: view
+      +schema: staging
+      cbb:
+        +tags: ['cbb', 'staging']
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+      cbb:
+        +tags: ['cbb', 'intermediate']
+    marts:
+      +materialized: table
+      +schema: marts
+      cbb:
+        +tags: ['cbb', 'marts']

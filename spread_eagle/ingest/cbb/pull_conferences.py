@@ -1,58 +1,55 @@
+"""
+Pull CBB conferences (reference data).
+
+Usage:
+    python -m spread_eagle.ingest.cbb.pull_conferences
+"""
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from pathlib import Path
 
-import requests
 import pandas as pd
 
-from spread_eagle.config import get_data_paths, settings
-
-BASE_URL = "https://api.collegebasketballdata.com"
-
-
-def fetch_conferences() -> List[Dict[str, Any]]:
-    """
-    Fetch all conferences (reference data).
-    """
-    if not settings.cbb_api_key:
-        raise RuntimeError("Missing CBB_API_KEY in .env")
-
-    headers = {
-        "Authorization": f"Bearer {settings.cbb_api_key}",
-        "Accept": "application/json",
-    }
-
-    resp = requests.get(f"{BASE_URL}/conferences", headers=headers, timeout=60)
-
-    if resp.status_code != 200:
-        print(f"ERROR: {resp.status_code} - {resp.text[:200]}")
-        return []
-
-    return resp.json()
+from spread_eagle.ingest.cbb._common import (
+    fetch_simple,
+    upload_folder_to_s3,
+)
 
 
 def main() -> None:
-    paths = get_data_paths("cbb")
-    paths.ensure_dirs()
+    output_dir = Path("data/cbb/raw/conferences")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Pulling conferences...")
-    conferences = fetch_conferences()
+    print("=" * 60)
+    print("  CONFERENCES FULL LOAD")
+    print("=" * 60)
 
-    # Save JSON
-    json_path = paths.raw / "conferences.json"
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(conferences, f, indent=2)
+    records = fetch_simple("/conferences")
+    print(f"  Fetched: {len(records):,} conferences")
 
-    # Save CSV
-    if conferences:
-        df = pd.json_normalize(conferences, sep="__")
-        csv_path = paths.raw / "conferences.csv"
+    if records:
+        # Save JSON
+        json_path = output_dir / "conferences.json"
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(records, f, indent=2)
+        print(f"  Saved: {json_path.name}")
+
+        # Save CSV and Parquet
+        df = pd.json_normalize(records, sep="_")
+        csv_path = output_dir / "conferences.csv"
         df.to_csv(csv_path, index=False)
-        print(f"Saved CSV -> {csv_path}")
+        print(f"  Saved: {csv_path.name} ({len(df):,} rows)")
 
-    print(f"Saved JSON -> {json_path}")
-    print(f"Total: {len(conferences):,} conferences")
+        parquet_path = output_dir / "conferences.parquet"
+        df.to_parquet(parquet_path, index=False)
+        print(f"  Saved: {parquet_path.name}")
+
+        # Upload to S3
+        print(f"\n  Uploading to S3...")
+        upload_folder_to_s3(output_dir, "cbb/raw/conferences")
+
+    print("\n  DONE!")
 
 
 if __name__ == "__main__":
