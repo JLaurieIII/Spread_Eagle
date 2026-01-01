@@ -1,8 +1,7 @@
-name: 'spread_eagle'
+name: 'dbt_transform'
 version: '1.0.0'
-config-version: 2
 
-profile: 'spread_eagle'
+profile: 'dbt_transform'
 
 model-paths: ["models"]
 analysis-paths: ["analyses"]
@@ -11,31 +10,59 @@ seed-paths: ["seeds"]
 macro-paths: ["macros"]
 snapshot-paths: ["snapshots"]
 
-target-path: "target"
 clean-targets:
   - "target"
   - "dbt_packages"
 
-vars:
-  # Default rolling window sizes
-  rolling_windows: [3, 5, 10, 20]
-  # Teaser point values to evaluate
-  teaser_points: [6, 7, 8, 10]
+# ============================================================
+# MODEL CONFIGURATIONS
+# ============================================================
+# Folder structure: models/{layer}/{sport}/
+# Schema pattern: {layer}_{sport}
+# ============================================================
 
 models:
-  spread_eagle:
+  dbt_transform:
+
+    # ----- STAGING LAYER -----
+    # Light cleaning, 1:1 with source tables
+    # Materialized as views (always fresh)
     staging:
       +materialized: view
-      +schema: staging
+      cfb:
+        +schema: staging_cfb
       cbb:
-        +tags: ['cbb', 'staging']
+        +schema: staging_cbb
+
+    # ----- INTERMEDIATE LAYER -----
+    # Business logic, joins, window functions
+    # Foundation tables as tables, others as views
     intermediate:
       +materialized: view
-      +schema: intermediate
+      cfb:
+        +schema: intermediate_cfb
       cbb:
-        +tags: ['cbb', 'intermediate']
+        +schema: intermediate_cbb
+
+    # ----- MARTS LAYER -----
+    # Final consumption layer for ML/API
+    # Materialized as tables for query performance
     marts:
       +materialized: table
-      +schema: marts
+      cfb:
+        +schema: marts_cfb
       cbb:
-        +tags: ['cbb', 'marts']
+        +schema: marts_cbb
+
+# ============================================================
+# VARIABLES
+# ============================================================
+vars:
+  # Rolling window sizes for features
+  rolling_windows: [3, 5, 10, 20]
+
+  # Teaser point adjustments
+  teaser_points: [6, 7, 8, 10, 12]
+
+  # Current season (for filtering)
+  current_season: 2024

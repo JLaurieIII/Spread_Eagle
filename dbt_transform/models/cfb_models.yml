@@ -1,0 +1,169 @@
+version: 2
+
+models:
+  - name: stg_cfb__games
+    description: "Staging: 1 row per completed game with normalized fields"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id]
+    columns:
+      - name: game_id
+        description: "Primary key for the game"
+        tests:
+          - not_null
+      - name: game_date
+        description: "Date of game (derived from start_date)"
+        tests:
+          - not_null
+      - name: home_id
+        description: "Home team id"
+        tests:
+          - not_null
+      - name: away_id
+        description: "Away team id"
+        tests:
+          - not_null
+
+  - name: stg_cfb__betting_lines
+    description: "Staging: sportsbook lines; grain = game_id + provider"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, provider]
+    columns:
+      - name: game_id
+        description: "Foreign key to games"
+        tests:
+          - not_null
+      - name: provider
+        description: "Sportsbook name"
+        tests:
+          - not_null
+      - name: spread_close
+        description: "Closing spread (home perspective)"
+        tests:
+          - not_null
+
+  - name: stg_cfb__teams
+    description: "Staging: team dimension"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [team_id]
+    columns:
+      - name: team_id
+        description: "Primary key for the team"
+        tests:
+          - not_null
+      - name: team_name
+        description: "Team display name"
+        tests:
+          - not_null
+
+  - name: int_cfb__game_team_lines
+    description: "Foundation: team-game grain with spreads normalized to team perspective"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: game_date
+        tests: [not_null]
+      - name: spread_close_for_team
+        tests: [not_null]
+      - name: team_points
+        tests: [not_null]
+      - name: opponent_points
+        tests: [not_null]
+
+  - name: int_cfb__rest_schedule
+    description: "Rest and schedule spot features at team-game grain"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: game_date
+        tests: [not_null]
+
+  - name: int_cfb__team_margin_sequence
+    description: "Margin sequences (arrays) by team-game for ML sequence features"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+
+  - name: int_cfb__team_rolling_form
+    description: "Rolling window features (ATS/O-U/score/win) without look-ahead leakage"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: game_date
+        tests: [not_null]
+      - name: team_game_num
+        tests: [not_null]
+
+  - name: fct_cfb__home_away_splits
+    description: "Season-level home/away performance splits per team"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [team_id, season]
+    columns:
+      - name: team_id
+        tests: [not_null]
+      - name: season
+        tests: [not_null]
+
+  - name: fct_cfb__line_movement
+    description: "Team-game line movement features (spread/total direction, steam flags)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: spread_close_for_team
+        tests: [not_null]
+
+  - name: fct_cfb__matchup_snapshot
+    description: "ML-ready labeled table combining team and opponent rolling form at game time"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: opponent_id
+        tests: [not_null]
+      - name: team_game_num
+        tests: [not_null]
+
+  - name: fct_cfb__upcoming_predictions
+    description: "Feature set for upcoming games (no outcomes) joining lines with latest rolling form"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: spread_close_for_team
+        tests: [not_null]
