@@ -1,0 +1,103 @@
+version: 2
+
+sources:
+  - name: cfb
+    description: "Raw college football data from CFBD API"
+    database: postgres
+    schema: cfb
+    
+    tables:
+      - name: games
+        description: "Game results with scores, dates, and metadata"
+        loaded_at_field: load_date
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 5, period: day}
+        columns:
+          - name: id
+            description: "Primary key - unique game identifier"
+            data_tests:
+              - unique
+              - not_null
+          - name: season
+            description: "Season year (e.g., 2024)"
+          - name: start_date
+            description: "Game date/time as string"
+          - name: home_id
+            description: "Home team ID (FK to teams)"
+          - name: away_id
+            description: "Away team ID (FK to teams)"
+          - name: home_points
+            description: "Home team final score"
+          - name: away_points
+            description: "Away team final score"
+          - name: completed
+            description: "Whether game has finished"
+
+      - name: betting_lines
+        description: "Spread and over/under lines from sportsbooks"
+        loaded_at_field: load_date
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 5, period: day}
+        columns:
+          - name: game_id
+            description: "FK to games table"
+            data_tests:
+              - not_null
+          - name: spread
+            description: "Closing spread (negative = home favored)"
+          - name: spread_open
+            description: "Opening spread"
+          - name: over_under
+            description: "Closing total"
+          - name: over_under_open
+            description: "Opening total"
+          - name: provider
+            description: "Sportsbook name"
+
+      - name: teams
+        description: "Team metadata - school, conference, location"
+        columns:
+          - name: id
+            description: "Primary key - unique team identifier"
+            data_tests:
+              - unique
+              - not_null
+          - name: school
+            description: "School name"
+          - name: conference
+            description: "Current conference"
+          - name: latitude
+            description: "School latitude (for travel distance)"
+          - name: longitude
+            description: "School longitude"
+
+      - name: venues
+        description: "Stadium/arena information"
+        columns:
+          - name: id
+            description: "Primary key - venue identifier"
+            data_tests:
+              - unique
+              - not_null
+          - name: name
+            description: "Venue name"
+          - name: latitude
+            description: "Venue latitude"
+          - name: longitude
+            description: "Venue longitude"
+          - name: timezone
+            description: "Venue timezone"
+
+      - name: conferences
+        description: "Conference metadata"
+        columns:
+          - name: id
+            data_tests:
+              - unique
+              - not_null
+          - name: name
+            description: "Full conference name"
+          - name: abbreviation
+            description: "Short code (e.g., SEC, B1G)"

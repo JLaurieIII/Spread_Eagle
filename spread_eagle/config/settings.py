@@ -1,5 +1,9 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import PostgresDsn
+
+# Project root directory (where .env lives)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -7,7 +11,7 @@ class Settings(BaseSettings):
     DATABASE_URL: PostgresDsn = "postgresql://user:pass@localhost:5432/spread_eagle"
 
     # Database settings
-    DB_HOST: str = "spread-eagle-db.cluster-cbwyw8ky62xm.us-east-2.rds.amazonaws.com"
+    DB_HOST: str = "spread-eagle-db.cbwyw8ky62xm.us-east-2.rds.amazonaws.com"
     DB_PORT: int = 5432
     DB_NAME: str = "postgres"
     DB_USER: str = "postgres"
@@ -71,7 +75,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown sport: {sport}")
 
     class Config:
-        env_file = ".env"
+        env_file = str(PROJECT_ROOT / ".env")
         env_file_encoding = "utf-8"
 
 
