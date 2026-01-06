@@ -11,3 +11,5 @@ numpy
 scikit-learn
 cfbd
 httpx
+boto3
+pyarrow
