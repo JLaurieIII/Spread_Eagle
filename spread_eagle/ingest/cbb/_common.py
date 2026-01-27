@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -77,6 +77,30 @@ def generate_month_ranges(start_year: int, start_month: int, end_year: int, end_
     return ranges
 
 
+def _split_date_range(start_iso: str, end_iso: str) -> List[tuple]:
+    """
+    Split an ISO date range into two halves (inclusive start/end days).
+
+    Used when a range hits the API cap (PAGE_SIZE) to reduce missed rows.
+    """
+    start_day = datetime.strptime(start_iso[:10], "%Y-%m-%d").date()
+    end_day = datetime.strptime(end_iso[:10], "%Y-%m-%d").date()
+
+    if start_day >= end_day:
+        return []
+
+    mid_day = start_day + (end_day - start_day) // 2
+    first_end = mid_day
+    second_start = mid_day + timedelta(days=1)
+
+    def fmt(day, end_of_day: bool) -> str:
+        return f"{day}T{'23:59:59' if end_of_day else '00:00:00'}Z"
+
+    first_range = (fmt(start_day, False), fmt(first_end, True))
+    second_range = (fmt(second_start, False), fmt(end_day, True))
+    return [first_range, second_range]
+
+
 def fetch_by_date_ranges(
     endpoint: str,
     season: int,
@@ -102,7 +126,11 @@ def fetch_by_date_ranges(
     # e.g., 2025 season = Nov 2024 - Apr 2025
     month_ranges = generate_month_ranges(season - 1, 11, season, 4)
 
-    for start_date, end_date in month_ranges:
+    # Use a queue so we can split ranges on the fly if we hit PAGE_SIZE
+    ranges_queue = list(month_ranges)
+
+    while ranges_queue:
+        start_date, end_date = ranges_queue.pop(0)
         params = {"season": season, "startDateRange": start_date, "endDateRange": end_date}
         if base_params:
             params.update(base_params)
@@ -125,6 +153,25 @@ def fetch_by_date_ranges(
         data = resp.json()
         if not isinstance(data, list):
             continue
+
+        # If we hit or exceed the cap, split the range to avoid missing rows.
+        if len(data) >= PAGE_SIZE:
+            split_ranges = _split_date_range(start_date, end_date)
+            if split_ranges:
+                print(
+                    f"        {start_date[:10]} to {end_date[:10]} returned {len(data)} (>= {PAGE_SIZE}); "
+                    f"splitting into {split_ranges[0][0][:10]}-{split_ranges[0][1][:10]} "
+                    f"and {split_ranges[1][0][:10]}-{split_ranges[1][1][:10]}"
+                )
+                # Process the first half next, then the second half.
+                ranges_queue = split_ranges + ranges_queue
+                time.sleep(0.2)
+                continue
+            else:
+                print(
+                    f"        {start_date[:10]} to {end_date[:10]} hit cap ({len(data)}); "
+                    "cannot split further, using results as-is"
+                )
 
         # Dedupe on the fly using composite key or single id_field
         new_records = []

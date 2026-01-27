@@ -167,3 +167,20 @@ models:
         tests: [not_null]
       - name: spread_close_for_team
         tests: [not_null]
+
+  - name: fct_cfb__bovada_ou_variance
+    description: "Bovada-only OU margins with rolling and season variance by team-game"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: bovada_total_close
+        tests: [not_null]
+      - name: total_points
+        tests: [not_null]
+      - name: ou_margin_close
+        tests: [not_null]

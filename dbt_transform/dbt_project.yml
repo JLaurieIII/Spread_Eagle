@@ -33,6 +33,7 @@ models:
         +schema: staging_cfb
       cbb:
         +schema: staging_cbb
+        +tags: ['cbb']
 
     # ----- INTERMEDIATE LAYER -----
     # Business logic, joins, window functions
@@ -43,6 +44,7 @@ models:
         +schema: intermediate_cfb
       cbb:
         +schema: intermediate_cbb
+        +tags: ['cbb']
 
     # ----- MARTS LAYER -----
     # Final consumption layer for ML/API
@@ -53,6 +55,7 @@ models:
         +schema: marts_cfb
       cbb:
         +schema: marts_cbb
+        +tags: ['cbb']
 
 # ============================================================
 # VARIABLES

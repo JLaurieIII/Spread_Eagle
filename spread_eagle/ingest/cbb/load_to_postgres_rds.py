@@ -1,7 +1,8 @@
 """
-Load Parquet files to PostgreSQL.
+Load Parquet files to AWS RDS PostgreSQL.
 
 Simple truncate + full load pattern.
+Use this for pushing to AWS RDS (SSL required).
 """
 import json
 import re
@@ -18,9 +19,14 @@ def to_snake_case(name: str) -> str:
     s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from spread_eagle.config.settings import settings
+import os
+
+# Read directly from environment (not from settings, so .env.aws sourcing works)
+DB_HOST = os.environ.get("DB_HOST", "")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "")
+DB_USER = os.environ.get("DB_USER", "")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 
 
 # Parquet file -> table mapping
@@ -87,15 +93,15 @@ JSONB_COLUMNS = [
 
 
 def get_connection():
-    """Get PostgreSQL connection."""
+    """Get AWS RDS PostgreSQL connection (SSL required)."""
     return psycopg2.connect(
-        host=settings.db_host,
-        port=settings.db_port,
-        database=settings.db_name,
-        user=settings.db_user,
-        password=settings.db_password,
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
         connect_timeout=30,
-        sslmode="require",
+        sslmode="require",  # Required for AWS RDS
     )
 
 
@@ -228,13 +234,25 @@ def run_ddl(conn, ddl_path: Path):
 
 
 def main():
-    """Load all tables."""
+    """Load all tables to AWS RDS PostgreSQL."""
     data_dir = Path(__file__).parent.parent.parent.parent / "data" / "cbb" / "raw"
     ddl_path = Path(__file__).parent.parent.parent.parent / "data" / "cbb" / "ddl" / "create_tables.sql"
 
+    print("=" * 60)
+    print("  LOADING TO AWS RDS POSTGRESQL")
+    print("=" * 60)
     print(f"Data directory: {data_dir}")
-    print(f"Connecting to: {settings.db_host}:{settings.db_port}/{settings.db_name}")
+    print(f"Connecting to: {DB_HOST}:{DB_PORT}/{DB_NAME}")
     print()
+
+    # Safety check - warn if connecting to RDS
+    if "rds.amazonaws.com" in DB_HOST:
+        print("WARNING: You are about to load data to AWS RDS!")
+        print("Press Ctrl+C within 5 seconds to cancel...")
+        import time
+        time.sleep(5)
+        print("Proceeding...")
+        print()
 
     conn = get_connection()
 

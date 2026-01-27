@@ -1,0 +1,127 @@
+version: 2
+
+sources:
+  - name: cbb
+    description: "Raw college basketball data (ingested from CBB API exports)"
+    database: "{{ target.database }}"
+    schema: cbb
+
+    tables:
+      - name: games
+        description: "Game results with scores, dates, and context flags"
+        loaded_at_field: created_at
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 5, period: day}
+        columns:
+          - name: id
+            description: "Primary key - unique game identifier"
+            tests:
+              - unique
+              - not_null
+          - name: season
+            description: "Season year (e.g., 2026 for 2025-26 season)"
+          - name: start_date
+            description: "Tip-off date/time (UTC)"
+          - name: home_team_id
+            description: "Home team id"
+          - name: away_team_id
+            description: "Away team id"
+          - name: home_points
+            description: "Home team final score"
+          - name: away_points
+            description: "Away team final score"
+
+      - name: betting_lines
+        description: "Sportsbook lines (spread, totals, moneylines)"
+        loaded_at_field: created_at
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 5, period: day}
+        columns:
+          - name: game_id
+            description: "FK to games table"
+            tests:
+              - not_null
+          - name: provider
+            description: "Sportsbook name"
+          - name: over_under
+            description: "Closing total (from home perspective for spreads)"
+          - name: over_under_open
+            description: "Opening total"
+
+      - name: teams
+        description: "Team dimension with conference and venue metadata"
+        columns:
+          - name: id
+            tests:
+              - unique
+              - not_null
+          - name: display_name
+            description: "Team display name"
+          - name: conference
+            description: "Current conference code"
+
+      - name: conferences
+        description: "Conference dimension"
+        columns:
+          - name: id
+            tests:
+              - unique
+              - not_null
+          - name: abbreviation
+            description: "Short conference code"
+
+      - name: venues
+        description: "Venue dimension (arenas/stadiums)"
+        columns:
+          - name: id
+            tests:
+              - unique
+              - not_null
+          - name: name
+            description: "Venue name"
+
+      - name: game_team_stats
+        description: "Per-game team stats (ts_*/os_* prefixed columns)"
+        loaded_at_field: created_at
+        columns:
+          - name: game_id
+            tests:
+              - not_null
+          - name: team_id
+            tests:
+              - not_null
+
+      - name: game_player_stats
+        description: "Per-game player stats"
+        loaded_at_field: created_at
+        columns:
+          - name: game_id
+            tests:
+              - not_null
+          - name: athlete_id
+            tests:
+              - not_null
+
+      - name: team_season_stats
+        description: "Season-level team metrics"
+        loaded_at_field: created_at
+        columns:
+          - name: season
+            tests:
+              - not_null
+          - name: team_id
+            tests:
+              - not_null
+
+      - name: player_season_stats
+        description: "Season-level player metrics"
+        loaded_at_field: created_at
+        columns:
+          - name: season
+            tests:
+              - not_null
+          - name: athlete_id
+            tests:
+              - not_null

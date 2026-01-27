@@ -1,0 +1,229 @@
+version: 2
+
+models:
+  # =============================================================================
+  # STAGING MODELS
+  # =============================================================================
+
+  - name: stg_cbb__games
+    description: "Staging: 1 row per CBB game with normalized fields"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: game_date
+        tests: [not_null]
+      - name: home_id
+        tests: [not_null]
+      - name: away_id
+        tests: [not_null]
+
+  - name: stg_cbb__betting_lines
+    description: "Staging: sportsbook lines; grain = game_id + provider"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, provider]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: provider
+        tests: [not_null]
+      - name: total_close
+        tests: [not_null]
+
+  - name: stg_cbb__teams
+    description: "Staging: CBB team dimension"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [team_id]
+    columns:
+      - name: team_id
+        tests: [not_null]
+      - name: team_name
+        tests: [not_null]
+
+  - name: stg_cbb__conferences
+    description: "Staging: conference dimension"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [conference_id]
+    columns:
+      - name: conference_id
+        tests: [not_null]
+      - name: conference_abbr
+
+  - name: stg_cbb__venues
+    description: "Staging: venue dimension"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [venue_id]
+    columns:
+      - name: venue_id
+        tests: [not_null]
+      - name: venue_name
+
+  - name: stg_cbb__game_team_stats
+    description: "Staging: per-game team stats (team/opponent prefixes)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+
+  - name: stg_cbb__game_player_stats
+    description: "Staging: per-game player stats"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, athlete_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: athlete_id
+        tests: [not_null]
+
+  - name: stg_cbb__team_season_stats
+    description: "Staging: season-level team stats"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [season, team_id]
+    columns:
+      - name: season
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+
+  - name: stg_cbb__player_season_stats
+    description: "Staging: season-level player stats (per team)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [season, athlete_id, team_id]
+    columns:
+      - name: season
+        tests: [not_null]
+      - name: athlete_id
+        tests: [not_null]
+
+  # =============================================================================
+  # INTERMEDIATE MODELS - CBB O/U ML Pipeline
+  # =============================================================================
+
+  - name: int_cbb__team_game_stats
+    description: |
+      Intermediate: Cleaned per-game team statistics with derived metrics.
+      Grain: 1 row per game per team (each game appears twice).
+      Purpose: Normalizes raw stats for downstream rolling window calculations.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        description: "Unique game identifier"
+        tests: [not_null]
+      - name: team_id
+        description: "Team whose stats are in this row"
+        tests: [not_null]
+      - name: opponent_id
+        description: "Opposing team"
+        tests: [not_null]
+      - name: points_scored
+        description: "Points scored by this team"
+        tests: [not_null]
+      - name: points_allowed
+        description: "Points allowed by this team"
+        tests: [not_null]
+      - name: pace
+        description: "Game pace (possessions per 40 min)"
+        tests: [not_null]
+
+  - name: int_cbb__team_rolling_stats
+    description: |
+      Intermediate: Rolling window statistics for each team.
+      Grain: 1 row per game per team.
+      Windows: Last 3, 5, 10 games (EXCLUDES current game).
+      Scope: Within-season only (resets each November).
+      Purpose: Captures recent form/trends for ML features.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id, team_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: team_id
+        tests: [not_null]
+      - name: season
+        tests: [not_null]
+      - name: games_played_season
+        description: "Number of games played before this game (within season)"
+
+  - name: int_cbb__game_betting_outcomes
+    description: |
+      Intermediate: Bovada O/U lines joined with actual game outcomes.
+      Grain: 1 row per game (only games with Bovada lines).
+      Purpose: Creates target variables for ML training.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: vegas_total
+        description: "Bovada closing O/U line"
+        tests: [not_null]
+      - name: actual_total
+        description: "Actual combined score (home + away)"
+      - name: over_hit
+        description: "1 if actual > vegas_total, 0 otherwise"
+
+  # =============================================================================
+  # FACT/MART MODELS - CBB O/U ML Pipeline
+  # =============================================================================
+
+  - name: fct_cbb__ml_features_ou
+    description: |
+      Fact: ML-ready feature table for CBB Over/Under prediction.
+      Grain: 1 row per game (only games with Bovada O/U lines).
+
+      Features include:
+      - Home team rolling stats (L3, L5, L10 windows)
+      - Away team rolling stats (L3, L5, L10 windows)
+      - Combined/derived features (pace, efficiency matchups)
+      - Vegas line features (total, spread, movement)
+
+      Target variables (for completed games):
+      - actual_total: Regression target
+      - over_hit: Classification target (1/0)
+      - total_margin: Actual - Vegas line
+
+      Filter flags:
+      - is_completed: Has final score
+      - has_sufficient_history: Both teams have 5+ games
+
+      Usage:
+      - Training: WHERE is_completed AND has_sufficient_history
+      - Inference: WHERE NOT is_completed (future games)
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [game_id]
+    columns:
+      - name: game_id
+        tests: [not_null]
+      - name: game_date
+        tests: [not_null]
+      - name: vegas_total
+        description: "Bovada closing O/U line"
+        tests: [not_null]
+      - name: home_id
+        tests: [not_null]
+      - name: away_id
+        tests: [not_null]
+      - name: is_completed
+        description: "True if game has final score"
+        tests: [not_null]
+      - name: has_sufficient_history
+        description: "True if both teams have 5+ games this season"
+        tests: [not_null]
