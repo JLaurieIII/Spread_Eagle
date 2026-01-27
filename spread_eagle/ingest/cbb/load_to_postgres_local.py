@@ -19,9 +19,17 @@ def to_snake_case(name: str) -> str:
     s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from spread_eagle.config.settings import settings
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+
+# Read from environment first (Docker overrides), fall back to defaults
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "spread_eagle")
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 
 
 # Parquet file -> table mapping
@@ -90,11 +98,11 @@ JSONB_COLUMNS = [
 def get_connection():
     """Get LOCAL PostgreSQL connection (no SSL)."""
     return psycopg2.connect(
-        host=settings.db_host,
-        port=settings.db_port,
-        database=settings.db_name,
-        user=settings.db_user,
-        password=settings.db_password,
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
         connect_timeout=30,
         # No sslmode for local - faster connection
     )
@@ -237,7 +245,7 @@ def main():
     print("  LOADING TO LOCAL POSTGRESQL")
     print("=" * 60)
     print(f"Data directory: {data_dir}")
-    print(f"Connecting to: {settings.db_host}:{settings.db_port}/{settings.db_name}")
+    print(f"Connecting to: {DB_HOST}:{DB_PORT}/{DB_NAME}")
     print()
 
     conn = get_connection()

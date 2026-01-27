@@ -8,6 +8,7 @@ Endpoints for serving college basketball games and predictions.
 Endpoints:
     GET /cbb/games              - Get games for a specific date
     GET /cbb/dashboard          - Get full game cards for dashboard UI
+    GET /cbb/preview/{game_id}  - AI-generated Spread Eagle game preview
     GET /cbb/predictions        - Get predictions for upcoming games
     GET /cbb/predictions/{id}   - Get prediction for specific game
     GET /cbb/probability        - Calculate P(Total > X) for custom threshold
@@ -27,8 +28,85 @@ import json
 import joblib
 
 from spread_eagle.core.database import get_db
+from spread_eagle.services.preview_service import PreviewService
 
 router = APIRouter(prefix="/cbb", tags=["College Basketball"])
+
+
+# =============================================================================
+# PREVIEW MODELS
+# =============================================================================
+
+class ArticleSource(BaseModel):
+    """An article used in preview generation."""
+    title: str = ""
+    url: str = ""
+    snippet: str = ""
+
+
+class GamePreviewResponse(BaseModel):
+    """AI-generated game preview."""
+    game_id: int
+    game_date: str
+    headline: str
+    tldr: str
+    body: str
+    spread_pick: Optional[str] = None
+    spread_rationale: Optional[str] = None
+    ou_pick: Optional[str] = None
+    ou_rationale: Optional[str] = None
+    confidence: Optional[str] = None
+    key_factors: List[str] = []
+    articles_used: List[ArticleSource] = []
+    model_used: str = "gpt-4o"
+    generated_at: Optional[str] = None
+    cached: bool = False
+
+
+# =============================================================================
+# PREVIEW ENDPOINT
+# =============================================================================
+
+@router.get(
+    "/preview/{game_id}",
+    response_model=GamePreviewResponse,
+    summary="Get AI-generated game preview",
+)
+async def get_game_preview(
+    game_id: int,
+    date: str = Query(
+        ...,
+        description="Date in YYYY-MM-DD format",
+        example="2026-01-27",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the Spread Eagle AI-generated game preview.
+
+    First request triggers generation (~2-5s). Subsequent requests
+    serve the cached result instantly.
+    """
+    try:
+        game_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    service = PreviewService(db)
+    result = service.get_or_generate_preview(game_id, game_date)
+
+    if result is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Preview generation unavailable. Check OPENAI_API_KEY or game data.",
+        )
+
+    # Strip internal metadata before returning
+    result.pop("_raw", None)
+    result.pop("_tokens_used", None)
+    result.pop("_generation_time_ms", None)
+
+    return GamePreviewResponse(**result)
 
 
 # =============================================================================

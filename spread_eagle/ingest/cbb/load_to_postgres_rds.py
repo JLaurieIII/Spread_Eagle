@@ -20,6 +20,9 @@ def to_snake_case(name: str) -> str:
     return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # Read directly from environment (not from settings, so .env.aws sourcing works)
 DB_HOST = os.environ.get("DB_HOST", "")

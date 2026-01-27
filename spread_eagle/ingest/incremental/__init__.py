@@ -21,25 +21,18 @@ from spread_eagle.ingest.incremental.cbb_rolling import (
     pull_cbb_lines,
     pull_cbb_team_stats,
     pull_cbb_game_players,
+    pull_cbb_team_season_stats,
+    pull_cbb_player_season_stats,
 )
 
-from spread_eagle.ingest.incremental.cfb_rolling import (
-    pull_cfb_games,
-    pull_cfb_lines,
-    pull_cfb_team_stats,
-    pull_cfb_game_players,
-)
-
-from spread_eagle.ingest.incremental.run_incremental import run_all
+from spread_eagle.ingest.incremental.run_incremental import main as run_all
 
 __all__ = [
     "pull_cbb_games",
     "pull_cbb_lines",
     "pull_cbb_team_stats",
     "pull_cbb_game_players",
-    "pull_cfb_games",
-    "pull_cfb_lines",
-    "pull_cfb_team_stats",
-    "pull_cfb_game_players",
+    "pull_cbb_team_season_stats",
+    "pull_cbb_player_season_stats",
     "run_all",
 ]

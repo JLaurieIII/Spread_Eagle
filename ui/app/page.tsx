@@ -22,6 +22,7 @@ import {
   Clock,
   Loader2,
 } from "lucide-react";
+import SpreadEaglePreview from "@/components/game-detail/SpreadEaglePreview";
 
 // API Base URL
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
@@ -325,7 +326,7 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
 // Components - Game Detail Dashboard
 // ============================================================================
 
-function GameDetailDashboard({ game }: { game: CBBGame }) {
+function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate: string }) {
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -366,6 +367,9 @@ function GameDetailDashboard({ game }: { game: CBBGame }) {
           </div>
         </div>
       </div>
+
+      {/* Spread Eagle AI Preview */}
+      <SpreadEaglePreview gameId={game.id} currentDate={currentDate} />
 
       {/* Teams Side by Side */}
       <div className="grid md:grid-cols-2 gap-4">
@@ -458,13 +462,48 @@ function GameDetailDashboard({ game }: { game: CBBGame }) {
 // ============================================================================
 
 export default function CBBDashboard() {
-  // Default to Jan 24, 2026 which has rich test data (142 games)
-  // Change to new Date() for production
-  const [currentDate, setCurrentDate] = useState(() => createLocalDate(2026, 1, 24));
+  const [currentDate, setCurrentDate] = useState(() => new Date());
   const [games, setGames] = useState<CBBGame[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedConferences, setSelectedConferences] = useState<Set<string>>(new Set());
+
+  // Derive unique conferences from loaded games, sorted alphabetically
+  const conferences = useMemo(() => {
+    const confSet = new Set<string>();
+    games.forEach((g) => {
+      confSet.add(g.homeTeam.conference);
+      confSet.add(g.awayTeam.conference);
+    });
+    return Array.from(confSet).sort();
+  }, [games]);
+
+  // Filter games: show game if either team belongs to a selected conference
+  const filteredGames = useMemo(() => {
+    if (selectedConferences.size === 0) return games;
+    return games.filter(
+      (g) =>
+        selectedConferences.has(g.homeTeam.conference) ||
+        selectedConferences.has(g.awayTeam.conference)
+    );
+  }, [games, selectedConferences]);
+
+  const toggleConference = (conf: string) => {
+    setSelectedConferences((prev) => {
+      const next = new Set(prev);
+      if (next.has(conf)) {
+        next.delete(conf);
+      } else {
+        next.add(conf);
+      }
+      return next;
+    });
+  };
+
+  const clearConferenceFilter = () => {
+    setSelectedConferences(new Set());
+  };
 
   // Fetch games when date changes
   useEffect(() => {
@@ -475,6 +514,7 @@ export default function CBBDashboard() {
         const dateStr = formatDateForAPI(currentDate);
         const fetchedGames = await fetchDashboardGames(dateStr);
         setGames(fetchedGames);
+        setSelectedConferences(new Set());
         // Select first game by default
         if (fetchedGames.length > 0) {
           setSelectedGameId(fetchedGames[0].id);
@@ -492,9 +532,18 @@ export default function CBBDashboard() {
     loadGames();
   }, [currentDate]);
 
+  // Auto-select first filtered game when filter changes and current selection is hidden
+  useEffect(() => {
+    if (filteredGames.length > 0 && !filteredGames.find((g) => g.id === selectedGameId)) {
+      setSelectedGameId(filteredGames[0].id);
+    } else if (filteredGames.length === 0 && selectedConferences.size > 0) {
+      setSelectedGameId(null);
+    }
+  }, [filteredGames, selectedGameId, selectedConferences]);
+
   const selectedGame = useMemo(() => {
-    return games.find((g) => g.id === selectedGameId) ?? null;
-  }, [games, selectedGameId]);
+    return filteredGames.find((g) => g.id === selectedGameId) ?? null;
+  }, [filteredGames, selectedGameId]);
 
   const handlePrevDay = () => {
     setCurrentDate((d) => {
@@ -543,6 +592,53 @@ export default function CBBDashboard() {
           </div>
         </div>
 
+        {/* Conference Filter */}
+        {!isLoading && !error && games.length > 0 && (
+          <div className="mb-5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={clearConferenceFilter}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
+                  selectedConferences.size === 0
+                    ? "bg-slate-800 text-white border-slate-800 shadow-md"
+                    : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
+                )}
+              >
+                All Games
+              </button>
+              {conferences.map((conf) => {
+                const isActive = selectedConferences.has(conf);
+                const gameCount = games.filter(
+                  (g) => g.homeTeam.conference === conf || g.awayTeam.conference === conf
+                ).length;
+                return (
+                  <button
+                    key={conf}
+                    onClick={() => toggleConference(conf)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
+                      isActive
+                        ? "bg-slate-800 text-white border-slate-800 shadow-md"
+                        : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
+                    )}
+                  >
+                    {conf}
+                    <span
+                      className={cn(
+                        "ml-1.5 text-xs",
+                        isActive ? "text-slate-300" : "text-slate-400"
+                      )}
+                    >
+                      {gameCount}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Loading State */}
         {isLoading && (
           <div className="flex items-center justify-center py-20">
@@ -572,9 +668,16 @@ export default function CBBDashboard() {
             {/* Game List */}
             <div className="space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
               <div className="text-sm font-semibold text-slate-600 uppercase tracking-wide px-1">
-                Games ({games.length})
+                {selectedConferences.size > 0
+                  ? `Games (${filteredGames.length} of ${games.length})`
+                  : `Games (${games.length})`}
               </div>
-              {games.map((game) => (
+              {filteredGames.length === 0 && selectedConferences.size > 0 && (
+                <div className="text-center py-8 text-sm text-slate-500">
+                  No games for selected conferences
+                </div>
+              )}
+              {filteredGames.map((game) => (
                 <MiniGameTile
                   key={game.id}
                   game={game}
@@ -585,7 +688,7 @@ export default function CBBDashboard() {
             </div>
 
             {/* Selected Game Detail */}
-            {selectedGame && <GameDetailDashboard game={selectedGame} />}
+            {selectedGame && <GameDetailDashboard game={selectedGame} currentDate={formatDateForAPI(currentDate)} />}
           </div>
         )}
 

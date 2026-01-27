@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # API Keys
     CFB_API_KEY: str | None = None
     CBB_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+    TAVILY_API_KEY: str | None = None
 
     @property
     def db_host(self) -> str:

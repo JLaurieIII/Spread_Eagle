@@ -261,23 +261,13 @@ def pull_cbb_game_players(days: int = 7) -> Dict[str, Any]:
     # Fetch data
     raw_records, errors = _fetch_cbb_by_date_range("/games/players", start_date, end_date)
 
-    # Flatten nested structure: each record has teams -> players
+    # Flatten: each record is one team-game with a 'players' array
     flat_records = []
     for game_record in raw_records:
-        game_id = game_record.get("gameId")
-        teams = game_record.get("teams", [])
-        for team in teams:
-            team_id = team.get("teamId")
-            team_name = team.get("team")
-            players = team.get("players", [])
-            for player in players:
-                flat_record = {
-                    "gameId": game_id,
-                    "teamId": team_id,
-                    "team": team_name,
-                    **player,
-                }
-                flat_records.append(flat_record)
+        base = {k: v for k, v in game_record.items() if k != "players"}
+        players = game_record.get("players", [])
+        for player in players:
+            flat_records.append({**base, **player})
 
     # Dedupe by composite key (gameId + athleteId)
     records = dedupe_records(flat_records, ["gameId", "athleteId"])
@@ -312,6 +302,118 @@ def pull_cbb_game_players(days: int = 7) -> Dict[str, Any]:
     }
 
 
+def pull_cbb_team_season_stats() -> Dict[str, Any]:
+    """
+    Pull CBB team season stats for the current season only.
+
+    Endpoint: /stats/team/season
+    Key fields: teamId + season (composite)
+    """
+    print("\n" + "=" * 60)
+    print("  CBB TEAM SEASON STATS - CURRENT SEASON")
+    print("=" * 60)
+
+    season = _get_cbb_season(datetime.now())
+    print(f"  Season: {season}")
+
+    headers = get_cbb_headers()
+    url = f"{CBB_API_BASE}/stats/team/season"
+    params = {"season": season}
+    errors = []
+
+    records, success = fetch_with_retry(url, headers, params)
+    if not success:
+        errors.append(f"Failed to fetch team season stats for {season}")
+
+    records = dedupe_records(records, ["teamId", "season"])
+    print(f"  Total: {len(records):,} team-season records")
+
+    # Save locally
+    date_str = format_date_ymd(datetime.now())
+    output_dir = Path(f"data/cbb/incremental/{date_str}/team_season_stats")
+    save_to_local(records, output_dir, "team_season_stats")
+
+    # Create manifest
+    start_date, end_date = get_date_window(1)
+    manifest = create_manifest(
+        sport="cbb",
+        endpoint="team_season_stats",
+        start_date=start_date,
+        end_date=end_date,
+        record_count=len(records),
+        success=len(errors) == 0,
+        errors=errors,
+    )
+
+    # Upload to S3
+    s3_prefix = f"cbb/incremental/{date_str}/team_season_stats"
+    s3_success = upload_to_s3(output_dir, s3_prefix, manifest)
+
+    return {
+        "endpoint": "team_season_stats",
+        "record_count": len(records),
+        "success": len(errors) == 0 and s3_success,
+        "errors": errors,
+        "s3_path": f"s3://spread-eagle/{s3_prefix}",
+    }
+
+
+def pull_cbb_player_season_stats() -> Dict[str, Any]:
+    """
+    Pull CBB player season stats for the current season only.
+
+    Endpoint: /stats/player/season
+    Key fields: athleteId + teamId + season (composite)
+    """
+    print("\n" + "=" * 60)
+    print("  CBB PLAYER SEASON STATS - CURRENT SEASON")
+    print("=" * 60)
+
+    season = _get_cbb_season(datetime.now())
+    print(f"  Season: {season}")
+
+    headers = get_cbb_headers()
+    url = f"{CBB_API_BASE}/stats/player/season"
+    params = {"season": season}
+    errors = []
+
+    records, success = fetch_with_retry(url, headers, params)
+    if not success:
+        errors.append(f"Failed to fetch player season stats for {season}")
+
+    records = dedupe_records(records, ["athleteId", "teamId", "season"])
+    print(f"  Total: {len(records):,} player-season records")
+
+    # Save locally
+    date_str = format_date_ymd(datetime.now())
+    output_dir = Path(f"data/cbb/incremental/{date_str}/player_season_stats")
+    save_to_local(records, output_dir, "player_season_stats")
+
+    # Create manifest
+    start_date, end_date = get_date_window(1)
+    manifest = create_manifest(
+        sport="cbb",
+        endpoint="player_season_stats",
+        start_date=start_date,
+        end_date=end_date,
+        record_count=len(records),
+        success=len(errors) == 0,
+        errors=errors,
+    )
+
+    # Upload to S3
+    s3_prefix = f"cbb/incremental/{date_str}/player_season_stats"
+    s3_success = upload_to_s3(output_dir, s3_prefix, manifest)
+
+    return {
+        "endpoint": "player_season_stats",
+        "record_count": len(records),
+        "success": len(errors) == 0 and s3_success,
+        "errors": errors,
+        "s3_path": f"s3://spread-eagle/{s3_prefix}",
+    }
+
+
 if __name__ == "__main__":
     # Quick test
     print("\nTesting CBB rolling window ingestion...")
@@ -320,6 +422,8 @@ if __name__ == "__main__":
         pull_cbb_lines(),
         pull_cbb_team_stats(),
         pull_cbb_game_players(),
+        pull_cbb_team_season_stats(),
+        pull_cbb_player_season_stats(),
     ]
     print("\n" + "=" * 60)
     print("  RESULTS SUMMARY")

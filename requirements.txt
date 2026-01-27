@@ -11,3 +11,4 @@ numpy
 scikit-learn
 cfbd
 httpx
+openai>=1.0

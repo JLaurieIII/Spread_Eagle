@@ -339,7 +339,7 @@ team_ou_latest as (
 -- =============================================================================
 -- STEP 5: Get last 5 games per team (as JSON array)
 -- =============================================================================
-team_recent_games as (
+team_all_games as (
     select
         g.id as game_id,
         g.start_date::date as game_date,
@@ -349,15 +349,10 @@ team_recent_games as (
         g.away_team as opponent,
         case when g.home_points > g.away_points then 'W' else 'L' end as result,
         g.home_points || '-' || g.away_points as score,
-        -- Spread result
         case
             when bl.spread is null then null
             else round(((g.home_points - g.away_points) + bl.spread)::numeric, 1)
-        end as spread_result,
-        row_number() over (
-            partition by g.home_team_id, g.season
-            order by g.start_date desc
-        ) as recency_rank
+        end as spread_result
     from cbb.games g
     left join cbb.betting_lines bl
         on g.id = bl.game_id and bl.provider = 'Bovada'
@@ -377,15 +372,21 @@ team_recent_games as (
         case
             when bl.spread is null then null
             else round(((g.away_points - g.home_points) + (-bl.spread))::numeric, 1)
-        end as spread_result,
-        row_number() over (
-            partition by g.away_team_id, g.season
-            order by g.start_date desc
-        ) as recency_rank
+        end as spread_result
     from cbb.games g
     left join cbb.betting_lines bl
         on g.id = bl.game_id and bl.provider = 'Bovada'
     where g.status = 'final' and g.away_points is not null and g.away_points > 0
+),
+
+team_recent_games as (
+    select
+        *,
+        row_number() over (
+            partition by team_id, season
+            order by game_date desc, game_id desc
+        ) as recency_rank
+    from team_all_games
 ),
 
 team_last5 as (
