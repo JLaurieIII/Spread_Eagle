@@ -1,8 +1,8 @@
 """
-CDC pull for CBB game player stats over a date window (default: last 7 days).
+CDC pull for CBB team game stats over a date window (default: last 7 days).
 
 Usage:
-    python -m spread_eagle.ingest.cbb.pull_game_players_cdc
+    python -m spread_eagle.ingest.cbb.pull_team_stats_cdc
 """
 from __future__ import annotations
 
@@ -12,23 +12,22 @@ from typing import Any, Dict, List
 from spread_eagle.ingest.cbb._common import fetch_date_window, write_cdc_outputs
 
 
-def pull_game_players_cdc(start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
-    """Pull game player stats between start_dt and end_dt."""
-    print(f"  GAME PLAYERS CDC {start_dt.date()} -> {end_dt.date()}")
+def pull_team_stats_cdc(start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+    """Pull team game stats between start_dt and end_dt."""
+    print(f"  TEAM STATS CDC {start_dt.date()} -> {end_dt.date()}")
     records = fetch_date_window(
-        "/games/players",
+        "/games/teams",
         start_dt,
         end_dt,
         composite_key=["gameId", "teamId"],
     )
-    print(f"    {len(records):,} game-team records fetched")
+    print(f"    {len(records):,} team-game records fetched")
     write_cdc_outputs(
-        "game_players",
+        "team_stats",
         start_dt,
         end_dt,
         records,
-        flatten_field="players",
-        s3_prefix="cbb/cdc_7day/game_players",
+        s3_prefix="cbb/cdc_7day/team_stats",
     )
     return records
 
@@ -36,7 +35,7 @@ def pull_game_players_cdc(start_dt: datetime, end_dt: datetime) -> List[Dict[str
 def main() -> None:
     end_dt = datetime.utcnow()
     start_dt = (end_dt - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-    pull_game_players_cdc(start_dt, end_dt)
+    pull_team_stats_cdc(start_dt, end_dt)
 
 
 if __name__ == "__main__":
