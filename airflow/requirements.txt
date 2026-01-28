@@ -1,0 +1,7 @@
+pandas>=2.0.0
+requests>=2.28.0
+# sqlalchemy - using Airflow's bundled version (don't override)
+# psycopg2 - using Airflow's bundled version (don't override)
+python-dotenv>=1.0.0
+pyarrow>=14.0.0
+pydantic-settings>=2.0.0

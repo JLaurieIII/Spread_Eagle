@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: cfb
     description: "Raw college football data from CFBD API"
-    database: postgres
+    database: "{{ target.database }}"
     schema: cfb
     
     tables:

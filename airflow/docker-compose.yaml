@@ -1,0 +1,105 @@
+# Airflow Docker Compose - Local Development
+  # This runs Airflow with a lightweight setup for learning/development
+
+  version: '3.8'
+
+  x-airflow-common: &airflow-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment: &airflow-common-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      # Database + API keys come from mounted .env file
+      # Settings.py reads: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, CBB_API_KEY
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ../spread_eagle:/opt/airflow/spread_eagle  # Mount your Python package
+      - ../dbt_transform:/opt/airflow/dbt_transform  # Mount dbt project
+      - ../data:/opt/airflow/data  # Mount data folder for parquet files
+      - ../.env:/opt/airflow/.env  # Local config
+      - ../.env.aws:/opt/airflow/.env.aws  # AWS/RDS config
+      - ~/.aws:/home/airflow/.aws:ro  # Mount AWS credentials (read-only)
+      - ~/.dbt:/home/airflow/.dbt:ro  # Mount dbt profiles (read-only)
+    user: "50000:0"
+    depends_on: &airflow-common-depends-on
+      postgres:
+        condition: service_healthy
+
+  services:
+    # Airflow's own PostgreSQL (separate from your spread_eagle DB)
+    postgres:
+      image: postgres:15
+      environment:
+        POSTGRES_USER: airflow
+        POSTGRES_PASSWORD: airflow
+        POSTGRES_DB: airflow
+      volumes:
+        - postgres-db-volume:/var/lib/postgresql/data
+      healthcheck:
+        test: ["CMD", "pg_isready", "-U", "airflow"]
+        interval: 10s
+        retries: 5
+        start_period: 5s
+      restart: always
+
+    # Initialize the database (runs once)
+    airflow-init:
+      <<: *airflow-common
+      entrypoint: /bin/bash
+      command:
+        - -c
+        - |
+          airflow db migrate
+          airflow users create \
+            --username admin \
+            --firstname Admin \
+            --lastname User \
+            --role Admin \
+            --email admin@example.com \
+            --password admin
+      depends_on:
+        - postgres
+
+    # The web UI (where you'll see your DAGs)
+    airflow-webserver:
+      <<: *airflow-common
+      command: webserver
+      ports:
+        - "8080:8080"
+      healthcheck:
+        test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+        start_period: 30s
+      restart: always
+      depends_on:
+        <<: *airflow-common-depends-on
+        airflow-init:
+          condition: service_completed_successfully
+
+    # The scheduler (runs your DAGs on schedule)
+    airflow-scheduler:
+      <<: *airflow-common
+      command: scheduler
+      healthcheck:
+        test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+        start_period: 30s
+      restart: always
+      depends_on:
+        <<: *airflow-common-depends-on
+        airflow-init:
+          condition: service_completed_successfully
+
+  volumes:
+    postgres-db-volume:

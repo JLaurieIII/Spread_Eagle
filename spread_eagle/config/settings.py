@@ -8,18 +8,21 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 class Settings(BaseSettings):
     ENV: str = "dev"
-    DATABASE_URL: PostgresDsn = "postgresql://user:pass@localhost:5432/spread_eagle"
+    # Optional full DSN; if not provided, one is built from the fields below.
+    DATABASE_URL: str | None = None
 
-    # Database settings
-    DB_HOST: str = "spread-eagle-db.cbwyw8ky62xm.us-east-2.rds.amazonaws.com"
+    # Database settings (supply via environment or Secrets Manager)
+    DB_HOST: str = "localhost"
     DB_PORT: int = 5432
-    DB_NAME: str = "postgres"
+    DB_NAME: str = "spread_eagle"
     DB_USER: str = "postgres"
     DB_PASSWORD: str = ""
 
     # API Keys
     CFB_API_KEY: str | None = None
     CBB_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+    TAVILY_API_KEY: str | None = None
 
     @property
     def db_host(self) -> str:
@@ -64,6 +67,15 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "Missing CBB API key. Set CBB_API_KEY in .env"
             )
+
+    def database_url(self) -> str:
+        """Return the configured database URL, building from components when needed."""
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
+        return (
+            f"postgresql://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
 
     def require(self, sport: str = "cfb") -> None:
         """Validate API key for a sport."""

@@ -2,16 +2,26 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from spread_eagle.core.database import get_db, engine, Base
-from spread_eagle.core.models import Game
+from spread_eagle.core.database import get_db, engine
+from spread_eagle.core.models import Game, Base
 from spread_eagle.core.brain import SpreadEagleBrain
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
+# Import routers
+from spread_eagle.api.routers import cbb
+
 # Initialize Tables (if not already)
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Spread Eagle API", description="AI-Driven College Football Insights")
+app = FastAPI(
+    title="Spread Eagle API",
+    description="AI-Driven College Sports Betting Insights (CFB & CBB)",
+    version="2.0.0",
+)
+
+# Include routers
+app.include_router(cbb.router)
 
 # CORS
 app.add_middleware(
