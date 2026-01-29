@@ -214,6 +214,64 @@ def fetch_with_params(
     return data if isinstance(data, list) else []
 
 
+def date_to_season(dt: datetime) -> int:
+    """Map a datetime to the CBB season year (season spans Nov-Apr)."""
+    return dt.year + 1 if dt.month >= 8 else dt.year
+
+
+def fetch_date_window(
+    endpoint: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    base_params: Optional[Dict[str, Any]] = None,
+    id_field: str = "id",
+    composite_key: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch data for a specific date window using startDateRange/endDateRange.
+
+    Designed for CDC pulls where the window is small (e.g., 7 days),
+    so single-call pagination should suffice given the 3000 record cap.
+    """
+    headers = get_headers()
+    params: Dict[str, Any] = {
+        "startDateRange": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "endDateRange": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if base_params:
+        params.update(base_params)
+
+    try:
+        resp = requests.get(f"{BASE_URL}{endpoint}", headers=headers, params=params, timeout=120)
+    except requests.exceptions.Timeout:
+        print("        Timeout, retrying...")
+        time.sleep(2)
+        resp = requests.get(f"{BASE_URL}{endpoint}", headers=headers, params=params, timeout=120)
+
+    if resp.status_code != 200:
+        print(f"        ERROR: {resp.status_code} - {resp.text[:200]}")
+        return []
+
+    data = resp.json()
+    if not isinstance(data, list):
+        return []
+
+    # Dedupe
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for r in data:
+        if composite_key:
+            key = tuple(r.get(k) for k in composite_key)
+        else:
+            key = r.get(id_field)
+        if key is None or key not in seen:
+            out.append(r)
+            if key is not None:
+                seen.add(key)
+
+    return out
+
+
 def fetch_simple(endpoint: str) -> List[Dict[str, Any]]:
     """Fetch data from API (no pagination, simple GET)."""
     headers = get_headers()
@@ -318,3 +376,36 @@ def upload_file_to_s3(local_path: Path, s3_prefix: str) -> str:
     print(f"    Uploading: s3://{S3_BUCKET}/{s3_key}")
     s3.upload_file(str(local_path), S3_BUCKET, s3_key)
     return f"s3://{S3_BUCKET}/{s3_key}"
+
+
+def write_cdc_outputs(
+    endpoint: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    records: List[Dict[str, Any]],
+    flatten_field: Optional[str] = None,
+    s3_prefix: Optional[str] = None,
+) -> Dict[str, Path]:
+    """
+    Save CDC records to JSON/CSV/Parquet under data/cbb/cdc_7day/<endpoint>/.
+
+    Files overwrite on each run (no date suffix) to avoid accumulation.
+    """
+    base_dir = Path("data/cbb/cdc_7day") / endpoint
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove old files to ensure single set of outputs
+    for file_path in base_dir.iterdir():
+        if file_path.is_file():
+            file_path.unlink()
+
+    base_path = base_dir / f"{endpoint}_cdc"
+
+    json_path = base_path.with_suffix(".json")
+    save_json(records, json_path)
+    csv_parquet_paths = save_csv_parquet(records, base_path, flatten_field=flatten_field)
+
+    if s3_prefix:
+        upload_folder_to_s3(base_dir, s3_prefix)
+
+    return {"json": json_path, **csv_parquet_paths}
