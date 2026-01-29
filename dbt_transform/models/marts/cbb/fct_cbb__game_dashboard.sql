@@ -38,8 +38,9 @@
 with games_with_lines as (
     select
         g.id as game_id,
-        g.start_date::date as game_date,
-        to_char(g.start_date, 'HH:MI AM') as game_time,
+        -- Convert to Eastern time before extracting date (games show on correct US date)
+        (g.start_date AT TIME ZONE 'America/New_York')::date as game_date,
+        to_char(g.start_date AT TIME ZONE 'America/New_York', 'HH:MI AM') as game_time,
         g.start_date as game_timestamp,
         g.season,
         g.status,
@@ -444,6 +445,22 @@ latest_team_volatility as (
 ),
 
 -- =============================================================================
+-- STEP 8: Get market variance metrics per team
+-- =============================================================================
+latest_team_market_var as (
+    select
+        team_id,
+        season,
+        spread_variance_bucket,
+        total_variance_bucket,
+        spread_mean_error,
+        total_mean_error,
+        spread_rms_stabilized,
+        total_rms_stabilized
+    from {{ ref('int_cbb__team_market_variance') }}
+),
+
+-- =============================================================================
 -- FINAL: Bring it all together
 -- =============================================================================
 final as (
@@ -518,6 +535,22 @@ final as (
         al5.last_5_games as away_last_5_games,
         al5.recent_form as away_recent_form,
 
+        -- Home team market variance
+        coalesce(hmv.spread_variance_bucket, 3) as home_spread_variance_bucket,
+        coalesce(hmv.total_variance_bucket, 3) as home_total_variance_bucket,
+        coalesce(hmv.spread_mean_error, 0) as home_spread_mean_error,
+        coalesce(hmv.total_mean_error, 0) as home_total_mean_error,
+        coalesce(hmv.spread_rms_stabilized, 12) as home_spread_rms_stabilized,
+        coalesce(hmv.total_rms_stabilized, 12) as home_total_rms_stabilized,
+
+        -- Away team market variance
+        coalesce(amv.spread_variance_bucket, 3) as away_spread_variance_bucket,
+        coalesce(amv.total_variance_bucket, 3) as away_total_variance_bucket,
+        coalesce(amv.spread_mean_error, 0) as away_spread_mean_error,
+        coalesce(amv.total_mean_error, 0) as away_total_mean_error,
+        coalesce(amv.spread_rms_stabilized, 12) as away_spread_rms_stabilized,
+        coalesce(amv.total_rms_stabilized, 12) as away_total_rms_stabilized,
+
         -- Combined metrics
         round(((coalesce(hvol.cover_stddev, 15) + coalesce(avol.cover_stddev, 15)) / 2)::numeric, 1) as combined_volatility,
         case
@@ -566,6 +599,9 @@ final as (
     left join team_last5 hl5
         on g.home_team_id = hl5.team_id
         and g.season = hl5.season
+    left join latest_team_market_var hmv
+        on g.home_team_id = hmv.team_id
+        and g.season = hmv.season
 
     -- Away team joins (date-specific)
     left join team_records_daily ar
@@ -599,6 +635,9 @@ final as (
     left join team_last5 al5
         on g.away_team_id = al5.team_id
         and g.season = al5.season
+    left join latest_team_market_var amv
+        on g.away_team_id = amv.team_id
+        and g.season = amv.season
 )
 
 select * from final

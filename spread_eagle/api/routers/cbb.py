@@ -16,6 +16,7 @@ Endpoints:
 ================================================================================
 """
 
+import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -465,6 +466,15 @@ class DashboardTeamData(BaseModel):
     pace: Optional[float] = None
     recentForm: List[str]  # ["W", "L", "W", ...]
     last5Games: List[DashboardGameResult]
+    # Market variance fields
+    spreadVarianceBucket: int = 3
+    totalVarianceBucket: int = 3
+    spreadVarianceLabel: str = "MED"
+    totalVarianceLabel: str = "MED"
+    archetype: str = "Neutral"
+    spreadMeanError: float = 0.0
+    totalMeanError: float = 0.0
+    totalRmsStabilized: float = 12.0
 
 
 class DashboardGame(BaseModel):
@@ -479,6 +489,12 @@ class DashboardGame(BaseModel):
     homeTeam: DashboardTeamData
     awayTeam: DashboardTeamData
     league: str = "NCAA"
+    # Chaos / teaser fields
+    chaosRating: float = 3.0
+    chaosLabel: str = "MODERATE"
+    teaserUnder8Prob: Optional[float] = None
+    teaserUnder10Prob: Optional[float] = None
+    edgeSummary: List[str] = []
 
 
 class DashboardResponse(BaseModel):
@@ -562,6 +578,29 @@ TEAM_COLORS = {
 def _get_team_color(team_name: str) -> str:
     """Get team primary color, default to a neutral color."""
     return TEAM_COLORS.get(team_name, "#4a5568")
+
+
+def _normal_cdf(x: float) -> float:
+    """Standard normal CDF using math.erfc (no scipy needed)."""
+    return 0.5 * math.erfc(-x / math.sqrt(2))
+
+
+def _bucket_to_label(bucket: int) -> str:
+    """Convert variance bucket (1-5) to human label."""
+    if bucket <= 2:
+        return "LOW"
+    elif bucket <= 3:
+        return "MED"
+    return "HIGH"
+
+
+def _bucket_to_archetype(bucket: int) -> str:
+    """Convert total variance bucket to team archetype."""
+    if bucket <= 2:
+        return "Market Follower"
+    elif bucket <= 3:
+        return "Neutral"
+    return "Chaos Team"
 
 
 def _format_game_date(dt: datetime) -> str:
@@ -658,8 +697,12 @@ async def get_dashboard_games(
         ORDER BY game_timestamp, game_id
     """)
 
-    result = db.execute(query, {"game_date": game_date})
-    rows = result.fetchall()
+    try:
+        result = db.execute(query, {"game_date": game_date})
+        rows = result.fetchall()
+    except Exception as e:
+        print(f"Dashboard query error for {game_date}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
     # Helper functions for parsing
     def parse_form(form_str: Optional[str]) -> List[str]:
@@ -727,6 +770,18 @@ async def get_dashboard_games(
         # Format total
         total_str = str(row.total) if row.total else None
 
+        # Market variance fields (use getattr for backward compatibility - columns may not exist yet)
+        h_spread_bucket = int(getattr(row, 'home_spread_variance_bucket', None) or 3)
+        h_total_bucket = int(getattr(row, 'home_total_variance_bucket', None) or 3)
+        a_spread_bucket = int(getattr(row, 'away_spread_variance_bucket', None) or 3)
+        a_total_bucket = int(getattr(row, 'away_total_variance_bucket', None) or 3)
+        h_spread_me = float(getattr(row, 'home_spread_mean_error', None) or 0)
+        h_total_me = float(getattr(row, 'home_total_mean_error', None) or 0)
+        a_spread_me = float(getattr(row, 'away_spread_mean_error', None) or 0)
+        a_total_me = float(getattr(row, 'away_total_mean_error', None) or 0)
+        h_total_rms = float(getattr(row, 'home_total_rms_stabilized', None) or 12)
+        a_total_rms = float(getattr(row, 'away_total_rms_stabilized', None) or 12)
+
         # Build home team data (records are already formatted as strings like "12-5")
         home_team = DashboardTeamData(
             name=row.home_team or "TBD",
@@ -742,6 +797,14 @@ async def get_dashboard_games(
             pace=round(row.home_pace, 1) if row.home_pace else None,
             recentForm=parse_form(row.home_recent_form),
             last5Games=parse_last_5(row.home_last_5_games),
+            spreadVarianceBucket=h_spread_bucket,
+            totalVarianceBucket=h_total_bucket,
+            spreadVarianceLabel=_bucket_to_label(h_spread_bucket),
+            totalVarianceLabel=_bucket_to_label(h_total_bucket),
+            archetype=_bucket_to_archetype(h_total_bucket),
+            spreadMeanError=round(h_spread_me, 2),
+            totalMeanError=round(h_total_me, 2),
+            totalRmsStabilized=round(h_total_rms, 2),
         )
 
         # Build away team data
@@ -759,7 +822,71 @@ async def get_dashboard_games(
             pace=round(row.away_pace, 1) if row.away_pace else None,
             recentForm=parse_form(row.away_recent_form),
             last5Games=parse_last_5(row.away_last_5_games),
+            spreadVarianceBucket=a_spread_bucket,
+            totalVarianceBucket=a_total_bucket,
+            spreadVarianceLabel=_bucket_to_label(a_spread_bucket),
+            totalVarianceLabel=_bucket_to_label(a_total_bucket),
+            archetype=_bucket_to_archetype(a_total_bucket),
+            spreadMeanError=round(a_spread_me, 2),
+            totalMeanError=round(a_total_me, 2),
+            totalRmsStabilized=round(a_total_rms, 2),
         )
+
+        # ---- Game-level chaos and teaser calculations ----
+        chaos_rating = round((h_total_bucket + a_total_bucket) / 2, 1)
+        if chaos_rating <= 2:
+            chaos_label = "STABLE"
+        elif chaos_rating <= 3:
+            chaos_label = "MODERATE"
+        else:
+            chaos_label = "VOLATILE"
+
+        # Teaser probability: P(total < line + k)
+        sigma = (h_total_rms + a_total_rms) / 2
+        mu_shift = (h_total_me + a_total_me) / 2
+        teaser_u8 = None
+        teaser_u10 = None
+        if sigma > 0 and row.total is not None:
+            teaser_u8 = round(_normal_cdf((8 - mu_shift) / sigma), 3)
+            teaser_u10 = round(_normal_cdf((10 - mu_shift) / sigma), 3)
+
+        # Edge summary bullets
+        edge_summary: List[str] = []
+
+        # Variance level
+        avg_spread_bucket = (h_spread_bucket + a_spread_bucket) / 2
+        if avg_spread_bucket <= 2:
+            edge_summary.append("Low spread variance — both teams play close to the number")
+        elif avg_spread_bucket >= 4:
+            edge_summary.append("High spread variance — outcomes swing wide of the line")
+
+        # Pace direction
+        if home_team.pace and away_team.pace:
+            avg_pace = (home_team.pace + away_team.pace) / 2
+            if avg_pace >= 70:
+                edge_summary.append(f"Up-tempo game (avg pace {avg_pace:.0f}) — favors the over")
+            elif avg_pace <= 64:
+                edge_summary.append(f"Slow-paced game (avg pace {avg_pace:.0f}) — favors the under")
+
+        # Market bias
+        if abs(mu_shift) >= 3:
+            direction = "over" if mu_shift > 0 else "under"
+            edge_summary.append(f"Combined total bias of {mu_shift:+.1f} pts — these teams trend {direction}")
+
+        # Archetype combo
+        archetypes = {home_team.archetype, away_team.archetype}
+        if "Chaos Team" in archetypes and "Market Follower" in archetypes:
+            edge_summary.append("Chaos vs. Follower matchup — high uncertainty, fade the public")
+        elif archetypes == {"Market Follower"}:
+            edge_summary.append("Both teams are Market Followers — strong teaser candidates")
+        elif archetypes == {"Chaos Team"}:
+            edge_summary.append("Double Chaos matchup — avoid teasers, expect wild swings")
+
+        # Teaser conclusion
+        if teaser_u10 is not None and teaser_u10 >= 0.90:
+            edge_summary.append(f"Teaser +10 lands {teaser_u10*100:.0f}% of the time — strong under teaser play")
+        elif teaser_u10 is not None and teaser_u10 >= 0.80:
+            edge_summary.append(f"Teaser +10 lands {teaser_u10*100:.0f}% — moderate teaser value")
 
         games.append(DashboardGame(
             id=row.game_id,
@@ -772,6 +899,11 @@ async def get_dashboard_games(
             homeTeam=home_team,
             awayTeam=away_team,
             league="NCAA",
+            chaosRating=chaos_rating,
+            chaosLabel=chaos_label,
+            teaserUnder8Prob=teaser_u8,
+            teaserUnder10Prob=teaser_u10,
+            edgeSummary=edge_summary,
         ))
 
     return DashboardResponse(

@@ -54,6 +54,15 @@ type TeamData = {
   ppg: number | null;
   oppPpg: number | null;
   pace: number | null;
+  // Market variance
+  spreadVarianceBucket: number;
+  totalVarianceBucket: number;
+  spreadVarianceLabel: string;
+  totalVarianceLabel: string;
+  archetype: string;
+  spreadMeanError: number;
+  totalMeanError: number;
+  totalRmsStabilized: number;
 };
 
 type CBBGame = {
@@ -67,6 +76,12 @@ type CBBGame = {
   homeTeam: TeamData;
   awayTeam: TeamData;
   league: string;
+  // Chaos / teaser
+  chaosRating: number;
+  chaosLabel: "STABLE" | "MODERATE" | "VOLATILE";
+  teaserUnder8Prob: number | null;
+  teaserUnder10Prob: number | null;
+  edgeSummary: string[];
 };
 
 // Helper to format date for API (uses local timezone)
@@ -110,6 +125,55 @@ async function fetchDashboardGames(date: string): Promise<CBBGame[]> {
 
 function cn(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
+}
+
+function getChaosColor(label: string) {
+  switch (label) {
+    case "STABLE":
+      return { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-emerald-300" };
+    case "MODERATE":
+      return { bg: "bg-amber-100", text: "text-amber-700", border: "border-amber-300" };
+    case "VOLATILE":
+      return { bg: "bg-red-100", text: "text-red-700", border: "border-red-300" };
+    default:
+      return { bg: "bg-slate-100", text: "text-slate-700", border: "border-slate-300" };
+  }
+}
+
+function getTeaserColor(prob: number | null) {
+  if (prob == null) return "text-slate-400";
+  if (prob >= 0.9) return "text-emerald-600";
+  if (prob >= 0.8) return "text-amber-600";
+  return "text-red-600";
+}
+
+function getTeaserBg(prob: number | null) {
+  if (prob == null) return "bg-slate-50";
+  if (prob >= 0.9) return "bg-emerald-50";
+  if (prob >= 0.8) return "bg-amber-50";
+  return "bg-red-50";
+}
+
+function getArchetypeStyle(archetype: string) {
+  switch (archetype) {
+    case "Market Follower":
+      return "bg-emerald-100 text-emerald-700 border-emerald-300";
+    case "Chaos Team":
+      return "bg-red-100 text-red-700 border-red-300";
+    default:
+      return "bg-slate-100 text-slate-600 border-slate-300";
+  }
+}
+
+function getVarianceLabelColor(label: string) {
+  switch (label) {
+    case "LOW":
+      return "text-emerald-600";
+    case "HIGH":
+      return "text-red-600";
+    default:
+      return "text-amber-600";
+  }
 }
 
 // ============================================================================
@@ -192,10 +256,20 @@ function MiniGameTile({
         </div>
       </div>
 
-      {/* Time and conference */}
+      {/* Time, chaos badge, and conference */}
       <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
         <span className="text-xs text-slate-500">{game.gameTime}</span>
-        <span className="text-xs text-slate-500">{game.homeTeam.conference}</span>
+        <div className="flex items-center gap-2">
+          {game.chaosRating != null && (() => {
+            const cc = getChaosColor(game.chaosLabel ?? "MODERATE");
+            return (
+              <span className={cn("text-xs font-semibold px-1.5 py-0.5 rounded border", cc.bg, cc.text, cc.border)}>
+                {game.chaosRating.toFixed(1)}
+              </span>
+            );
+          })()}
+          <span className="text-xs text-slate-500">{game.homeTeam.conference}</span>
+        </div>
       </div>
     </button>
   );
@@ -220,8 +294,8 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
         >
           {team.shortName.charAt(0)}
         </div>
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
             {team.rank && (
               <span className="text-sm font-bold text-slate-500">#{team.rank}</span>
             )}
@@ -231,12 +305,17 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
             >
               {team.name}
             </span>
+            {team.archetype && (
+              <span className={cn("text-xs font-medium px-2 py-0.5 rounded-full border", getArchetypeStyle(team.archetype))}>
+                {team.archetype}
+              </span>
+            )}
           </div>
           <div className="text-sm text-slate-600">
             {team.record} • {team.confRecord} {team.conference}
           </div>
         </div>
-        <Badge variant="secondary" className="ml-auto">
+        <Badge variant="secondary" className="ml-auto shrink-0">
           {isHome ? "HOME" : "AWAY"}
         </Badge>
       </div>
@@ -260,6 +339,33 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
           <div className="text-lg font-bold text-slate-800">{team.oppPpg ?? "-"}</div>
         </div>
       </div>
+
+      {/* Market Profile */}
+      {team.spreadVarianceLabel != null && (
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="bg-slate-50 rounded-lg p-2">
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Spread Var</div>
+            <div className={cn("text-sm font-bold", getVarianceLabelColor(team.spreadVarianceLabel))}>
+              {team.spreadVarianceLabel}
+            </div>
+          </div>
+          <div className="bg-slate-50 rounded-lg p-2">
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Total Var</div>
+            <div className={cn("text-sm font-bold", getVarianceLabelColor(team.totalVarianceLabel))}>
+              {team.totalVarianceLabel}
+            </div>
+          </div>
+          <div className="bg-slate-50 rounded-lg p-2">
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Bias</div>
+            <div className={cn(
+              "text-sm font-bold",
+              (team.totalMeanError ?? 0) > 0 ? "text-red-600" : (team.totalMeanError ?? 0) < 0 ? "text-emerald-600" : "text-slate-600"
+            )}>
+              {(team.totalMeanError ?? 0) > 0 ? "+" : ""}{(team.totalMeanError ?? 0).toFixed(1)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recent Form */}
       <div className="mb-4">
@@ -349,7 +455,7 @@ function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               {game.spread && (
                 <div className="px-3 py-1.5 bg-slate-800 text-white text-sm font-bold rounded-lg">
                   {game.spread}
@@ -360,13 +466,58 @@ function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate
                   O/U {game.total}
                 </div>
               )}
+              {/* Chaos Rating Badge */}
+              {game.chaosRating != null && (() => {
+                const cc = getChaosColor(game.chaosLabel ?? "MODERATE");
+                return (
+                  <div className={cn("px-3 py-1.5 text-sm font-bold rounded-lg border", cc.bg, cc.text, cc.border)}>
+                    {game.chaosLabel ?? "MODERATE"} {game.chaosRating.toFixed(1)}/5
+                  </div>
+                );
+              })()}
             </div>
-            <div className="text-xs text-slate-500">
-              {game.homeTeam.conference} vs {game.awayTeam.conference}
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              {/* Teaser badges */}
+              {game.teaserUnder10Prob != null && (
+                <div className={cn("px-2 py-1 rounded text-xs font-bold", getTeaserBg(game.teaserUnder10Prob), getTeaserColor(game.teaserUnder10Prob))}>
+                  T+10 {(game.teaserUnder10Prob * 100).toFixed(0)}%
+                </div>
+              )}
+              {game.teaserUnder8Prob != null && (
+                <div className={cn("px-2 py-1 rounded text-xs font-bold", getTeaserBg(game.teaserUnder8Prob), getTeaserColor(game.teaserUnder8Prob))}>
+                  T+8 {(game.teaserUnder8Prob * 100).toFixed(0)}%
+                </div>
+              )}
+              <span className="text-xs text-slate-500">
+                {game.homeTeam.conference} vs {game.awayTeam.conference}
+              </span>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Edge Summary */}
+      {game.edgeSummary && game.edgeSummary.length > 0 && (
+        <div className="rounded-xl bg-white/80 border border-slate-200 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap className="w-4 h-4 text-amber-500" />
+            <span className="text-sm font-bold text-slate-700 uppercase tracking-wide">Edge Summary</span>
+          </div>
+          <ul className="space-y-1.5">
+            {game.edgeSummary.map((bullet, i) => {
+              const isConclusion = bullet.toLowerCase().includes("teaser") && (bullet.includes("strong") || bullet.includes("moderate"));
+              return (
+                <li key={i} className="flex items-start gap-2 text-sm">
+                  <span className="text-slate-400 mt-0.5">&#8226;</span>
+                  <span className={isConclusion ? "font-semibold text-slate-800" : "text-slate-600"}>
+                    {bullet}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* Spread Eagle AI Preview */}
       <SpreadEaglePreview gameId={game.id} currentDate={currentDate} />
@@ -468,6 +619,7 @@ export default function CBBDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedConferences, setSelectedConferences] = useState<Set<string>>(new Set());
+  const [chaosFilter, setChaosFilter] = useState<"all" | "low" | "teaser">("all");
 
   // Derive unique conferences from loaded games, sorted alphabetically
   const conferences = useMemo(() => {
@@ -479,15 +631,23 @@ export default function CBBDashboard() {
     return Array.from(confSet).sort();
   }, [games]);
 
-  // Filter games: show game if either team belongs to a selected conference
+  // Filter games: conference filter + chaos/teaser filter
   const filteredGames = useMemo(() => {
-    if (selectedConferences.size === 0) return games;
-    return games.filter(
-      (g) =>
-        selectedConferences.has(g.homeTeam.conference) ||
-        selectedConferences.has(g.awayTeam.conference)
-    );
-  }, [games, selectedConferences]);
+    let filtered = games;
+    if (selectedConferences.size > 0) {
+      filtered = filtered.filter(
+        (g) =>
+          selectedConferences.has(g.homeTeam.conference) ||
+          selectedConferences.has(g.awayTeam.conference)
+      );
+    }
+    if (chaosFilter === "low") {
+      filtered = filtered.filter((g) => g.chaosRating != null && g.chaosRating <= 2);
+    } else if (chaosFilter === "teaser") {
+      filtered = filtered.filter((g) => g.teaserUnder10Prob != null && g.teaserUnder10Prob >= 0.85);
+    }
+    return filtered;
+  }, [games, selectedConferences, chaosFilter]);
 
   const toggleConference = (conf: string) => {
     setSelectedConferences((prev) => {
@@ -515,6 +675,7 @@ export default function CBBDashboard() {
         const fetchedGames = await fetchDashboardGames(dateStr);
         setGames(fetchedGames);
         setSelectedConferences(new Set());
+        setChaosFilter("all");
         // Select first game by default
         if (fetchedGames.length > 0) {
           setSelectedGameId(fetchedGames[0].id);
@@ -536,10 +697,10 @@ export default function CBBDashboard() {
   useEffect(() => {
     if (filteredGames.length > 0 && !filteredGames.find((g) => g.id === selectedGameId)) {
       setSelectedGameId(filteredGames[0].id);
-    } else if (filteredGames.length === 0 && selectedConferences.size > 0) {
+    } else if (filteredGames.length === 0 && (selectedConferences.size > 0 || chaosFilter !== "all")) {
       setSelectedGameId(null);
     }
-  }, [filteredGames, selectedGameId, selectedConferences]);
+  }, [filteredGames, selectedGameId, selectedConferences, chaosFilter]);
 
   const selectedGame = useMemo(() => {
     return filteredGames.find((g) => g.id === selectedGameId) ?? null;
@@ -635,6 +796,31 @@ export default function CBBDashboard() {
                   </button>
                 );
               })}
+
+              {/* Chaos / Teaser filters */}
+              <div className="w-px h-6 bg-slate-300 mx-1" />
+              <button
+                onClick={() => setChaosFilter(chaosFilter === "low" ? "all" : "low")}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
+                  chaosFilter === "low"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md"
+                    : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
+                )}
+              >
+                Low Chaos
+              </button>
+              <button
+                onClick={() => setChaosFilter(chaosFilter === "teaser" ? "all" : "teaser")}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
+                  chaosFilter === "teaser"
+                    ? "bg-amber-600 text-white border-amber-600 shadow-md"
+                    : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
+                )}
+              >
+                Teaser Friendly
+              </button>
             </div>
           </div>
         )}
