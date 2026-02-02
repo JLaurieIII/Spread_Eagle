@@ -148,16 +148,17 @@ team_records_daily as (
 ),
 
 -- Get the LATEST record for each team (for scheduled games)
+-- This sums ALL completed games, not using the 1-preceding window
 team_records_latest as (
-    select distinct on (team_id, season)
+    select
         team_id,
         season,
-        wins,
-        losses,
-        conf_wins,
-        conf_losses
-    from team_records
-    order by team_id, season, game_date desc, wins desc nulls last
+        sum(is_win) as wins,
+        sum(is_loss) as losses,
+        sum(case when conference_game then is_win else 0 end) as conf_wins,
+        sum(case when conference_game then is_loss else 0 end) as conf_losses
+    from team_game_results
+    group by team_id, season
 ),
 
 -- =============================================================================
@@ -210,11 +211,12 @@ team_ats_records as (
         team_id,
         season,
         game_date,
-        sum(ats_win) over w_season_prior as ats_wins,
+        -- Count wins (ats_win = 1), losses (ats_win = 0), and pushes (ats_win is null)
+        sum(case when ats_win = 1 then 1 else 0 end) over w_season_prior as ats_wins,
         sum(case when ats_win = 0 then 1 else 0 end) over w_season_prior as ats_losses,
         sum(ats_push) over w_season_prior as ats_pushes
     from team_ats_results
-    where ats_win is not null
+    -- Don't filter out pushes! We need them for counting
     window w_season_prior as (
         partition by team_id, season
         order by game_date
@@ -234,16 +236,16 @@ team_ats_daily as (
     order by team_id, season, game_date, ats_wins desc nulls last
 ),
 
--- Get LATEST ATS record for each team
+-- Get LATEST ATS record for each team (sum ALL games, not 1-preceding)
 team_ats_latest as (
-    select distinct on (team_id, season)
+    select
         team_id,
         season,
-        coalesce(ats_wins, 0) as ats_wins,
-        coalesce(ats_losses, 0) as ats_losses,
-        coalesce(ats_pushes, 0) as ats_pushes
-    from team_ats_records
-    order by team_id, season, game_date desc, ats_wins desc nulls last
+        sum(case when ats_win = 1 then 1 else 0 end) as ats_wins,
+        sum(case when ats_win = 0 then 1 else 0 end) as ats_losses,
+        sum(ats_push) as ats_pushes
+    from team_ats_results
+    group by team_id, season
 ),
 
 -- =============================================================================
@@ -325,16 +327,16 @@ team_ou_daily as (
     order by team_id, season, game_date, overs desc nulls last
 ),
 
--- Get LATEST O/U record for each team
+-- Get LATEST O/U record for each team (sum ALL games, not 1-preceding)
 team_ou_latest as (
-    select distinct on (team_id, season)
+    select
         team_id,
         season,
-        coalesce(overs, 0) as overs,
-        coalesce(unders, 0) as unders,
-        coalesce(ou_pushes, 0) as ou_pushes
-    from team_ou_records
-    order by team_id, season, game_date desc, overs desc nulls last
+        sum(over_hit) as overs,
+        sum(under_hit) as unders,
+        sum(ou_push) as ou_pushes
+    from team_ou_results
+    group by team_id, season
 ),
 
 -- =============================================================================
@@ -348,12 +350,28 @@ team_all_games as (
         g.home_team_id as team_id,
         g.home_team as team_name,
         g.away_team as opponent,
+        true as is_home,
         case when g.home_points > g.away_points then 'W' else 'L' end as result,
         g.home_points || '-' || g.away_points as score,
+        -- Closing spread (from team's perspective: negative = favored)
+        bl.spread as spread,
+        -- Closing O/U
+        bl.over_under as total,
         case
             when bl.spread is null then null
             else round(((g.home_points - g.away_points) + bl.spread)::numeric, 1)
-        end as spread_result
+        end as spread_result,
+        case
+            when bl.over_under is null then null
+            when (g.home_points + g.away_points) > bl.over_under then 'O'
+            when (g.home_points + g.away_points) < bl.over_under then 'U'
+            else 'P'
+        end as ou_result,
+        -- Total margin (actual - line, positive = over)
+        case
+            when bl.over_under is null then null
+            else round(((g.home_points + g.away_points) - bl.over_under)::numeric, 1)
+        end as total_margin
     from cbb.games g
     left join cbb.betting_lines bl
         on g.id = bl.game_id and bl.provider = 'Bovada'
@@ -368,12 +386,28 @@ team_all_games as (
         g.away_team_id as team_id,
         g.away_team as team_name,
         g.home_team as opponent,
+        false as is_home,
         case when g.away_points > g.home_points then 'W' else 'L' end as result,
         g.away_points || '-' || g.home_points as score,
+        -- Closing spread (from team's perspective: flip sign for away team)
+        case when bl.spread is not null then -bl.spread else null end as spread,
+        -- Closing O/U
+        bl.over_under as total,
         case
             when bl.spread is null then null
             else round(((g.away_points - g.home_points) + (-bl.spread))::numeric, 1)
-        end as spread_result
+        end as spread_result,
+        case
+            when bl.over_under is null then null
+            when (g.home_points + g.away_points) > bl.over_under then 'O'
+            when (g.home_points + g.away_points) < bl.over_under then 'U'
+            else 'P'
+        end as ou_result,
+        -- Total margin (actual - line, positive = over)
+        case
+            when bl.over_under is null then null
+            else round(((g.home_points + g.away_points) - bl.over_under)::numeric, 1)
+        end as total_margin
     from cbb.games g
     left join cbb.betting_lines bl
         on g.id = bl.game_id and bl.provider = 'Bovada'
@@ -398,9 +432,14 @@ team_last5 as (
             json_build_object(
                 'date', to_char(game_date, 'MM/DD'),
                 'opponent', opponent,
+                'is_home', is_home,
                 'result', result,
                 'score', score,
-                'spread_result', spread_result
+                'spread', spread,
+                'total', total,
+                'spread_result', spread_result,
+                'ou_result', ou_result,
+                'total_margin', total_margin
             )
             order by recency_rank
         ) as last_5_games,
@@ -438,7 +477,15 @@ latest_team_volatility as (
         teaser_8_survival_l10 as teaser8_rate,
         teaser_10_survival_l10 as teaser10_rate,
         ats_win_rate_l10 as ats_rate_l10,
-        blowout_rate_l10 as blowout_rate
+        blowout_rate_l10 as blowout_rate,
+        -- New spread stability metrics
+        within_5_rate_l10 as within_5_rate,
+        within_6_rate_l10 as within_6_rate,
+        within_7_rate_l10 as within_7_rate,
+        within_8_rate_l10 as within_8_rate,
+        within_10_rate_l10 as within_10_rate,
+        worst_cover_l10 as worst_cover,
+        avg_cover_margin_l10 as avg_cover_margin
     from {{ ref('int_cbb__team_spread_volatility') }}
     where games_played >= 5  -- need at least 5 games
     order by team_id, season, game_date desc, game_id desc
@@ -458,6 +505,82 @@ latest_team_market_var as (
         spread_rms_stabilized,
         total_rms_stabilized
     from {{ ref('int_cbb__team_market_variance') }}
+),
+
+-- =============================================================================
+-- STEP 9: Get LATEST O/U trends for each team
+-- =============================================================================
+latest_team_ou_trends as (
+    select distinct on (team_id, season)
+        team_id,
+        season,
+        over_rate_l10,
+        under_rate_l10,
+        avg_total_margin_l10,
+        stddev_total_margin_l10,
+        avg_actual_total_l10,
+        max_over_margin_l10,
+        max_under_margin_l10,
+        overs_last_3,
+        unders_last_3,
+        -- Tightness to total metrics
+        within_5_total_rate_l10,
+        within_6_total_rate_l10,
+        within_7_total_rate_l10,
+        within_8_total_rate_l10,
+        within_10_total_rate_l10
+    from {{ ref('int_cbb__team_ou_trends') }}
+    where games_played >= 5  -- need at least 5 games
+    order by team_id, season, game_date desc, game_id desc
+),
+
+-- =============================================================================
+-- STEP 10: Get precomputed distribution stats for KDE graphs
+-- =============================================================================
+team_distributions as (
+    select
+        team_id,
+        team_name,
+        season,
+        -- Spread distribution data
+        spread_games,
+        spread_mean,
+        spread_median,
+        spread_std,
+        spread_iqr,
+        spread_p5,
+        spread_p25,
+        spread_p75,
+        spread_p95,
+        spread_min,
+        spread_max,
+        spread_within_6_rate,
+        spread_within_8_rate,
+        spread_within_10_rate,
+        spread_skewness,
+        spread_margins_json,
+        spread_predictability,
+        -- Total distribution data
+        total_games,
+        total_mean,
+        total_median,
+        total_std,
+        total_iqr,
+        total_p5,
+        total_p25,
+        total_p75,
+        total_p95,
+        total_min,
+        total_max,
+        total_within_6_rate,
+        total_within_8_rate,
+        total_within_10_rate,
+        total_skewness,
+        total_margins_json,
+        total_predictability,
+        -- Combined score
+        spread_eagle_score
+    from {{ ref('int_cbb__team_distribution_stats') }}
 ),
 
 -- =============================================================================
@@ -503,7 +626,29 @@ final as (
 
         -- Home team volatility
         round(hvol.cover_stddev::numeric, 1) as home_cover_stddev,
+        round(hvol.teaser8_rate::numeric, 2) as home_teaser8_rate,
         round(hvol.teaser10_rate::numeric, 2) as home_teaser10_rate,
+        round(hvol.within_5_rate::numeric, 2) as home_within_5_rate,
+        round(hvol.within_6_rate::numeric, 2) as home_within_6_rate,
+        round(hvol.within_7_rate::numeric, 2) as home_within_7_rate,
+        round(hvol.within_8_rate::numeric, 2) as home_within_8_rate,
+        round(hvol.within_10_rate::numeric, 2) as home_within_10_rate,
+        round(hvol.blowout_rate::numeric, 2) as home_blowout_rate,
+        round(hvol.worst_cover::numeric, 1) as home_worst_cover,
+
+        -- Home team O/U trends
+        round(hou_trends.over_rate_l10::numeric, 2) as home_over_rate_l10,
+        round(hou_trends.under_rate_l10::numeric, 2) as home_under_rate_l10,
+        round(hou_trends.avg_total_margin_l10::numeric, 1) as home_avg_total_margin_l10,
+        round(hou_trends.avg_actual_total_l10::numeric, 1) as home_avg_game_total_l10,
+        hou_trends.overs_last_3 as home_overs_last_3,
+        hou_trends.unders_last_3 as home_unders_last_3,
+        -- Home team total tightness
+        round(hou_trends.within_5_total_rate_l10::numeric, 2) as home_within_5_total_rate,
+        round(hou_trends.within_6_total_rate_l10::numeric, 2) as home_within_6_total_rate,
+        round(hou_trends.within_7_total_rate_l10::numeric, 2) as home_within_7_total_rate,
+        round(hou_trends.within_8_total_rate_l10::numeric, 2) as home_within_8_total_rate,
+        round(hou_trends.within_10_total_rate_l10::numeric, 2) as home_within_10_total_rate,
 
         -- Home team recent games
         hl5.last_5_games as home_last_5_games,
@@ -529,7 +674,29 @@ final as (
 
         -- Away team volatility
         round(avol.cover_stddev::numeric, 1) as away_cover_stddev,
+        round(avol.teaser8_rate::numeric, 2) as away_teaser8_rate,
         round(avol.teaser10_rate::numeric, 2) as away_teaser10_rate,
+        round(avol.within_5_rate::numeric, 2) as away_within_5_rate,
+        round(avol.within_6_rate::numeric, 2) as away_within_6_rate,
+        round(avol.within_7_rate::numeric, 2) as away_within_7_rate,
+        round(avol.within_8_rate::numeric, 2) as away_within_8_rate,
+        round(avol.within_10_rate::numeric, 2) as away_within_10_rate,
+        round(avol.blowout_rate::numeric, 2) as away_blowout_rate,
+        round(avol.worst_cover::numeric, 1) as away_worst_cover,
+
+        -- Away team O/U trends
+        round(aou_trends.over_rate_l10::numeric, 2) as away_over_rate_l10,
+        round(aou_trends.under_rate_l10::numeric, 2) as away_under_rate_l10,
+        round(aou_trends.avg_total_margin_l10::numeric, 1) as away_avg_total_margin_l10,
+        round(aou_trends.avg_actual_total_l10::numeric, 1) as away_avg_game_total_l10,
+        aou_trends.overs_last_3 as away_overs_last_3,
+        aou_trends.unders_last_3 as away_unders_last_3,
+        -- Away team total tightness
+        round(aou_trends.within_5_total_rate_l10::numeric, 2) as away_within_5_total_rate,
+        round(aou_trends.within_6_total_rate_l10::numeric, 2) as away_within_6_total_rate,
+        round(aou_trends.within_7_total_rate_l10::numeric, 2) as away_within_7_total_rate,
+        round(aou_trends.within_8_total_rate_l10::numeric, 2) as away_within_8_total_rate,
+        round(aou_trends.within_10_total_rate_l10::numeric, 2) as away_within_10_total_rate,
 
         -- Away team recent games
         al5.last_5_games as away_last_5_games,
@@ -563,7 +730,94 @@ final as (
             when (coalesce(hvol.cover_stddev, 15) + coalesce(avol.cover_stddev, 15)) / 2 < 10 then 'LOW'
             when (coalesce(hvol.cover_stddev, 15) + coalesce(avol.cover_stddev, 15)) / 2 < 14 then 'MED'
             else 'HIGH'
-        end as volatility_level
+        end as volatility_level,
+
+        -- Combined teaser metrics (historical survival rates)
+        round(((coalesce(hvol.teaser8_rate, 0.8) + coalesce(avol.teaser8_rate, 0.8)) / 2)::numeric, 2) as combined_teaser8_rate,
+        round(((coalesce(hvol.teaser10_rate, 0.8) + coalesce(avol.teaser10_rate, 0.8)) / 2)::numeric, 2) as combined_teaser10_rate,
+        round(((coalesce(hvol.within_10_rate, 0.7) + coalesce(avol.within_10_rate, 0.7)) / 2)::numeric, 2) as combined_within_10_rate,
+
+        -- Combined O/U trends (historical over/under rates)
+        round(((coalesce(hou_trends.over_rate_l10, 0.5) + coalesce(aou_trends.over_rate_l10, 0.5)) / 2)::numeric, 2) as combined_over_rate_l10,
+        round(((coalesce(hou_trends.under_rate_l10, 0.5) + coalesce(aou_trends.under_rate_l10, 0.5)) / 2)::numeric, 2) as combined_under_rate_l10,
+        round(((coalesce(hou_trends.avg_total_margin_l10, 0) + coalesce(aou_trends.avg_total_margin_l10, 0)) / 2)::numeric, 1) as combined_avg_total_margin,
+        -- Combined total tightness
+        round(((coalesce(hou_trends.within_10_total_rate_l10, 0.7) + coalesce(aou_trends.within_10_total_rate_l10, 0.7)) / 2)::numeric, 2) as combined_within_10_total_rate,
+
+        -- =====================================================================
+        -- HOME TEAM DISTRIBUTION DATA (precomputed for KDE graphs)
+        -- =====================================================================
+        hdist.spread_games as home_spread_games,
+        round(hdist.spread_mean::numeric, 2) as home_spread_mean,
+        round(hdist.spread_median::numeric, 2) as home_spread_median,
+        round(hdist.spread_std::numeric, 2) as home_spread_std,
+        round(hdist.spread_iqr::numeric, 2) as home_spread_iqr,
+        round(hdist.spread_p5::numeric, 2) as home_spread_p5,
+        round(hdist.spread_p25::numeric, 2) as home_spread_p25,
+        round(hdist.spread_p75::numeric, 2) as home_spread_p75,
+        round(hdist.spread_p95::numeric, 2) as home_spread_p95,
+        round(hdist.spread_min::numeric, 2) as home_spread_min,
+        round(hdist.spread_max::numeric, 2) as home_spread_max,
+        round(hdist.spread_within_6_rate::numeric, 3) as home_spread_within_6_rate,
+        round(hdist.spread_within_8_rate::numeric, 3) as home_spread_within_8_rate,
+        round(hdist.spread_within_10_rate::numeric, 3) as home_spread_within_10_rate,
+        round(hdist.spread_skewness::numeric, 3) as home_spread_skewness,
+        hdist.spread_margins_json as home_spread_margins,
+        round(hdist.spread_predictability::numeric, 1) as home_spread_predictability,
+        -- Home total distribution
+        hdist.total_games as home_total_games,
+        round(hdist.total_std::numeric, 2) as home_total_std,
+        round(hdist.total_within_6_rate::numeric, 3) as home_total_within_6_rate,
+        round(hdist.total_within_8_rate::numeric, 3) as home_total_within_8_rate,
+        round(hdist.total_within_10_rate::numeric, 3) as home_total_within_10_rate,
+        round(hdist.total_skewness::numeric, 3) as home_total_skewness,
+        hdist.total_margins_json as home_total_margins,
+        round(hdist.total_predictability::numeric, 1) as home_total_predictability,
+
+        -- =====================================================================
+        -- AWAY TEAM DISTRIBUTION DATA (precomputed for KDE graphs)
+        -- =====================================================================
+        adist.spread_games as away_spread_games,
+        round(adist.spread_mean::numeric, 2) as away_spread_mean,
+        round(adist.spread_median::numeric, 2) as away_spread_median,
+        round(adist.spread_std::numeric, 2) as away_spread_std,
+        round(adist.spread_iqr::numeric, 2) as away_spread_iqr,
+        round(adist.spread_p5::numeric, 2) as away_spread_p5,
+        round(adist.spread_p25::numeric, 2) as away_spread_p25,
+        round(adist.spread_p75::numeric, 2) as away_spread_p75,
+        round(adist.spread_p95::numeric, 2) as away_spread_p95,
+        round(adist.spread_min::numeric, 2) as away_spread_min,
+        round(adist.spread_max::numeric, 2) as away_spread_max,
+        round(adist.spread_within_6_rate::numeric, 3) as away_spread_within_6_rate,
+        round(adist.spread_within_8_rate::numeric, 3) as away_spread_within_8_rate,
+        round(adist.spread_within_10_rate::numeric, 3) as away_spread_within_10_rate,
+        round(adist.spread_skewness::numeric, 3) as away_spread_skewness,
+        adist.spread_margins_json as away_spread_margins,
+        round(adist.spread_predictability::numeric, 1) as away_spread_predictability,
+        -- Away total distribution
+        adist.total_games as away_total_games,
+        round(adist.total_std::numeric, 2) as away_total_std,
+        round(adist.total_within_6_rate::numeric, 3) as away_total_within_6_rate,
+        round(adist.total_within_8_rate::numeric, 3) as away_total_within_8_rate,
+        round(adist.total_within_10_rate::numeric, 3) as away_total_within_10_rate,
+        round(adist.total_skewness::numeric, 3) as away_total_skewness,
+        adist.total_margins_json as away_total_margins,
+        round(adist.total_predictability::numeric, 1) as away_total_predictability,
+
+        -- =====================================================================
+        -- COMBINED PREDICTABILITY SCORES (game-level)
+        -- =====================================================================
+        round(((coalesce(hdist.spread_predictability, 50) + coalesce(adist.spread_predictability, 50)) / 2)::numeric, 1) as combined_spread_predictability,
+        round(((coalesce(hdist.total_predictability, 50) + coalesce(adist.total_predictability, 50)) / 2)::numeric, 1) as combined_total_predictability,
+        round(((coalesce(hdist.spread_eagle_score, 50) + coalesce(adist.spread_eagle_score, 50)) / 2)::numeric, 1) as combined_spread_eagle_score,
+
+        -- Spread Eagle verdict based on combined spread predictability
+        case
+            when ((coalesce(hdist.spread_predictability, 50) + coalesce(adist.spread_predictability, 50)) / 2) >= 70 then 'SPREAD EAGLE'
+            when ((coalesce(hdist.spread_predictability, 50) + coalesce(adist.spread_predictability, 50)) / 2) >= 60 then 'LEAN'
+            when ((coalesce(hdist.spread_predictability, 50) + coalesce(adist.spread_predictability, 50)) / 2) >= 50 then 'CAUTION'
+            else 'AVOID'
+        end as spread_eagle_verdict
 
     from games_with_lines g
 
@@ -602,6 +856,9 @@ final as (
     left join latest_team_market_var hmv
         on g.home_team_id = hmv.team_id
         and g.season = hmv.season
+    left join latest_team_ou_trends hou_trends
+        on g.home_team_id = hou_trends.team_id
+        and g.season = hou_trends.season
 
     -- Away team joins (date-specific)
     left join team_records_daily ar
@@ -638,6 +895,17 @@ final as (
     left join latest_team_market_var amv
         on g.away_team_id = amv.team_id
         and g.season = amv.season
+    left join latest_team_ou_trends aou_trends
+        on g.away_team_id = aou_trends.team_id
+        and g.season = aou_trends.season
+
+    -- Distribution stats for KDE graphs (precomputed)
+    left join team_distributions hdist
+        on g.home_team_id = hdist.team_id
+        and g.season = hdist.season
+    left join team_distributions adist
+        on g.away_team_id = adist.team_id
+        and g.season = adist.season
 )
 
 select * from final
