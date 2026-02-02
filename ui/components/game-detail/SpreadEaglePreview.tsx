@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 
 // API Base URL
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ============================================================================
 // Types
@@ -98,16 +98,7 @@ export default function SpreadEaglePreview({
 
   // ── Loading state ───────────────────────────────────────────────────
   if (isLoading) {
-    return (
-      <div className="rounded-xl border border-amber-200/60 bg-amber-50/50 p-5">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl animate-bounce">🦅</span>
-          <span className="text-sm font-medium text-amber-800 italic">
-            The Eagle is circling this matchup...
-          </span>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   // ── Error / unavailable — hide silently ─────────────────────────────

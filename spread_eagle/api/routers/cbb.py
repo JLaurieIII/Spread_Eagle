@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -78,7 +79,7 @@ async def get_game_preview(
     date: str = Query(
         ...,
         description="Date in YYYY-MM-DD format",
-        example="2026-01-27",
+        examples=["2026-01-27"],
     ),
     db: Session = Depends(get_db),
 ):
@@ -161,7 +162,7 @@ async def get_games_by_date(
     date: str = Query(
         ...,
         description="Date in YYYY-MM-DD format",
-        example="2026-01-15",
+        examples=["2026-01-15"],
     ),
     db: Session = Depends(get_db),
 ):
@@ -445,9 +446,59 @@ class DashboardGameResult(BaseModel):
     """Single game result for last 5 games."""
     date: str
     opponent: str
+    isHome: bool = True  # True if team was home, False if away
     result: str  # "W" or "L"
     score: str
+    spread: Optional[float] = None  # Closing spread (from team's perspective)
+    total: Optional[float] = None  # Closing O/U line
     spreadResult: float
+    ouResult: Optional[str] = None  # "O", "U", "P", or null
+    totalMargin: Optional[float] = None  # Actual total minus line (positive = over)
+
+
+class TeaserProfile(BaseModel):
+    """Historical teaser survival and spread stability metrics."""
+    teaser8SurvivalRate: Optional[float] = None
+    teaser10SurvivalRate: Optional[float] = None
+    within5Rate: Optional[float] = None
+    within7Rate: Optional[float] = None
+    within10Rate: Optional[float] = None
+    blowoutRate: Optional[float] = None
+    worstCover: Optional[float] = None
+    coverStddev: Optional[float] = None
+
+
+class OverUnderProfile(BaseModel):
+    """Historical over/under trends for a team."""
+    overRateL10: Optional[float] = None
+    underRateL10: Optional[float] = None
+    avgTotalMarginL10: Optional[float] = None
+    avgGameTotalL10: Optional[float] = None
+    oversLast3: Optional[int] = None
+    undersLast3: Optional[int] = None
+    # Tightness to total metrics
+    within5TotalRate: Optional[float] = None
+    within7TotalRate: Optional[float] = None
+    within10TotalRate: Optional[float] = None
+
+
+class TeamDistributionData(BaseModel):
+    """Distribution data for KDE visualization."""
+    margins: List[float]  # Raw margins for frontend KDE calculation
+    mean: float
+    median: float
+    std: float
+    iqr: float
+    p5: float
+    p25: float
+    p75: float
+    p95: float
+    minVal: float
+    maxVal: float
+    within8Rate: float  # EXCLUSIVE: < 8
+    within10Rate: float  # EXCLUSIVE: < 10
+    skewness: float
+    predictability: float  # 0-100 score
 
 
 class DashboardTeamData(BaseModel):
@@ -455,6 +506,7 @@ class DashboardTeamData(BaseModel):
     name: str
     shortName: str
     primaryColor: str
+    secondaryColor: str = "#ffffff"
     record: str
     rank: Optional[int] = None
     confRecord: str
@@ -475,6 +527,13 @@ class DashboardTeamData(BaseModel):
     spreadMeanError: float = 0.0
     totalMeanError: float = 0.0
     totalRmsStabilized: float = 12.0
+    # Teaser profile (historical spread stability)
+    teaserProfile: Optional[TeaserProfile] = None
+    # Over/Under profile (historical O/U trends)
+    overUnderProfile: Optional[OverUnderProfile] = None
+    # Distribution data for KDE graphs (shown below last 5 games)
+    spreadDistribution: Optional[TeamDistributionData] = None
+    totalDistribution: Optional[TeamDistributionData] = None
 
 
 class DashboardGame(BaseModel):
@@ -495,6 +554,20 @@ class DashboardGame(BaseModel):
     teaserUnder8Prob: Optional[float] = None
     teaserUnder10Prob: Optional[float] = None
     edgeSummary: List[str] = []
+    # Combined historical teaser metrics
+    combinedTeaser8Rate: Optional[float] = None
+    combinedTeaser10Rate: Optional[float] = None
+    combinedWithin10Rate: Optional[float] = None
+    # Combined historical O/U metrics
+    combinedOverRateL10: Optional[float] = None
+    combinedUnderRateL10: Optional[float] = None
+    combinedAvgTotalMargin: Optional[float] = None
+    combinedWithin10TotalRate: Optional[float] = None
+    # Spread Eagle predictability scores (from KDE analysis)
+    spreadPredictability: Optional[float] = None  # Combined spread predictability (0-100)
+    totalPredictability: Optional[float] = None  # Combined total predictability (0-100)
+    spreadEagleScore: Optional[float] = None  # Average of spread + total (0-100)
+    spreadEagleVerdict: str = "N/A"  # "SPREAD EAGLE", "LEAN TEASER", "CAUTION", "AVOID"
 
 
 class DashboardResponse(BaseModel):
@@ -580,6 +653,43 @@ def _get_team_color(team_name: str) -> str:
     return TEAM_COLORS.get(team_name, "#4a5568")
 
 
+def _get_team_info_from_db(db: Session, team_name: str) -> tuple[str, str, str]:
+    """Get team display name, primary color, and secondary color from database."""
+    # Order by best match: exact school match first, then display_name prefix
+    result = db.execute(
+        text("""
+            SELECT display_name, primary_color, secondary_color
+            FROM cbb.teams
+            WHERE display_name = :team_name
+               OR school = :team_name
+               OR display_name ILIKE :team_pattern
+            ORDER BY
+                CASE
+                    WHEN school = :team_name THEN 1
+                    WHEN display_name = :team_name THEN 2
+                    ELSE 3
+                END
+            LIMIT 1
+        """),
+        {"team_name": team_name, "team_pattern": f"{team_name}%"}
+    ).fetchone()
+
+    if result and result[0]:
+        display_name = result[0]
+        primary = f"#{result[1]}" if result[1] and not result[1].startswith("#") else (result[1] or "#4a5568")
+        secondary = f"#{result[2]}" if result[2] and not result[2].startswith("#") else (result[2] or "#ffffff")
+        return display_name, primary, secondary
+
+    # Fallback
+    return team_name, TEAM_COLORS.get(team_name, "#4a5568"), "#ffffff"
+
+
+def _get_team_colors_from_db(db: Session, team_name: str) -> tuple[str, str]:
+    """Get team primary and secondary colors from database."""
+    _, primary, secondary = _get_team_info_from_db(db, team_name)
+    return primary, secondary
+
+
 def _normal_cdf(x: float) -> float:
     """Standard normal CDF using math.erfc (no scipy needed)."""
     return 0.5 * math.erfc(-x / math.sqrt(2))
@@ -619,6 +729,84 @@ def _format_game_time(dt: datetime) -> str:
     return f"{hour_12}:{minute:02d}{am_pm}"
 
 
+def _get_team_distribution(db: Session, team_id: int, margin_type: str) -> Optional[TeamDistributionData]:
+    """
+    Get distribution data for a team for KDE visualization.
+
+    Args:
+        db: Database session
+        team_id: Team ID
+        margin_type: "spread" for cover_margin, "total" for total_margin
+
+    Returns:
+        TeamDistributionData with raw margins and stats, or None if insufficient data
+    """
+    if margin_type == "spread":
+        table = "intermediate_cbb.int_cbb__team_spread_volatility"
+        margin_col = "cover_margin"
+    else:
+        table = "intermediate_cbb.int_cbb__team_ou_trends"
+        margin_col = "total_margin"
+
+    query = text(f"""
+        SELECT {margin_col} as margin
+        FROM {table}
+        WHERE team_id = :team_id
+          AND season = 2026
+          AND {margin_col} IS NOT NULL
+        ORDER BY game_date
+    """)
+
+    try:
+        result = db.execute(query, {"team_id": team_id}).fetchall()
+    except Exception:
+        return None
+
+    if len(result) < 5:
+        return None
+
+    margins = [float(r.margin) for r in result]
+    margins_arr = np.array(margins)
+
+    mean = float(np.mean(margins_arr))
+    median = float(np.median(margins_arr))
+    std = float(np.std(margins_arr))
+    p5, p25, p75, p95 = [float(np.percentile(margins_arr, p)) for p in [5, 25, 75, 95]]
+    iqr = p75 - p25
+
+    # EXCLUSIVE comparisons (< not <=) per SESSION_NOTES.md
+    within_8 = float(np.mean(np.abs(margins_arr) < 8))
+    within_10 = float(np.mean(np.abs(margins_arr) < 10))
+
+    # Skewness approximation (Pearson's second coefficient)
+    skewness = 3 * (mean - median) / std if std > 0 else 0
+
+    # Predictability score formula from SESSION_NOTES.md
+    # 30% low std + 20% IQR as kurtosis proxy + 50% within_10_rate
+    std_score = max(0, min(100, 100 - (std - 5) * (100 / 15)))
+    iqr_score = max(0, min(100, 50 - iqr * 2))
+    w10_score = within_10 * 100
+    predictability = std_score * 0.3 + iqr_score * 0.2 + w10_score * 0.5
+
+    return TeamDistributionData(
+        margins=margins,
+        mean=round(mean, 2),
+        median=round(median, 2),
+        std=round(std, 2),
+        iqr=round(iqr, 2),
+        p5=round(p5, 2),
+        p25=round(p25, 2),
+        p75=round(p75, 2),
+        p95=round(p95, 2),
+        minVal=round(float(np.min(margins_arr)), 2),
+        maxVal=round(float(np.max(margins_arr)), 2),
+        within8Rate=round(within_8, 3),
+        within10Rate=round(within_10, 3),
+        skewness=round(skewness, 3),
+        predictability=round(predictability, 1)
+    )
+
+
 @router.get(
     "/dashboard",
     response_model=DashboardResponse,
@@ -628,7 +816,7 @@ async def get_dashboard_games(
     date: str = Query(
         ...,
         description="Date in YYYY-MM-DD format",
-        example="2026-01-24",
+        examples=["2026-01-24"],
     ),
     db: Session = Depends(get_db),
 ):
@@ -656,6 +844,7 @@ async def get_dashboard_games(
         SELECT
             game_id,
             game_date,
+            game_time,
             game_timestamp,
             venue,
             location,
@@ -690,7 +879,76 @@ async def get_dashboard_games(
 
             -- Betting
             spread,
-            total
+            total,
+
+            -- Home team teaser/volatility metrics
+            home_teaser8_rate,
+            home_teaser10_rate,
+            home_within_5_rate,
+            home_within_7_rate,
+            home_within_10_rate,
+            home_blowout_rate,
+            home_worst_cover,
+            home_cover_stddev,
+
+            -- Away team teaser/volatility metrics
+            away_teaser8_rate,
+            away_teaser10_rate,
+            away_within_5_rate,
+            away_within_7_rate,
+            away_within_10_rate,
+            away_blowout_rate,
+            away_worst_cover,
+            away_cover_stddev,
+
+            -- Combined teaser metrics
+            combined_teaser8_rate,
+            combined_teaser10_rate,
+            combined_within_10_rate,
+
+            -- Home team O/U trends
+            home_over_rate_l10,
+            home_under_rate_l10,
+            home_avg_total_margin_l10,
+            home_avg_game_total_l10,
+            home_overs_last_3,
+            home_unders_last_3,
+
+            -- Away team O/U trends
+            away_over_rate_l10,
+            away_under_rate_l10,
+            away_avg_total_margin_l10,
+            away_avg_game_total_l10,
+            away_overs_last_3,
+            away_unders_last_3,
+
+            -- Home team total tightness
+            home_within_5_total_rate,
+            home_within_7_total_rate,
+            home_within_10_total_rate,
+
+            -- Away team total tightness
+            away_within_5_total_rate,
+            away_within_7_total_rate,
+            away_within_10_total_rate,
+
+            -- Combined O/U metrics
+            combined_over_rate_l10,
+            combined_under_rate_l10,
+            combined_avg_total_margin,
+            combined_within_10_total_rate,
+
+            -- Market variance buckets (for chaos ratings)
+            home_spread_variance_bucket,
+            home_total_variance_bucket,
+            away_spread_variance_bucket,
+            away_total_variance_bucket,
+            home_spread_mean_error,
+            home_total_mean_error,
+            away_spread_mean_error,
+            away_total_mean_error,
+            home_total_rms_stabilized,
+            away_total_rms_stabilized
 
         FROM marts_cbb.fct_cbb__game_dashboard
         WHERE DATE(game_date) = :game_date
@@ -734,9 +992,14 @@ async def get_dashboard_games(
                 results.append(DashboardGameResult(
                     date=g.get("date", ""),
                     opponent=g.get("opponent", ""),
+                    isHome=g.get("is_home", True),
                     result=g.get("result", ""),
                     score=score,
+                    spread=float(g.get("spread")) if g.get("spread") is not None else None,
+                    total=float(g.get("total")) if g.get("total") is not None else None,
                     spreadResult=float(g.get("spread_result", 0) or 0),
+                    ouResult=g.get("ou_result"),
+                    totalMargin=float(g.get("total_margin")) if g.get("total_margin") is not None else None,
                 ))
             return results
         except (json.JSONDecodeError, TypeError):
@@ -744,17 +1007,21 @@ async def get_dashboard_games(
 
     games = []
     for row in rows:
-        # Parse start time
-        if row.game_timestamp:
-            start_dt = row.game_timestamp
-            game_date_str = _format_game_date(start_dt)
-            game_time_str = _format_game_time(start_dt)
-        elif row.game_date:
+        # Use pre-formatted date/time from dbt mart (already in Eastern timezone)
+        if row.game_date:
             game_date_str = _format_game_date(datetime.combine(row.game_date, datetime.min.time()))
-            game_time_str = "TBD"
         else:
             game_date_str = "TBD"
-            game_time_str = "TBD"
+
+        # Use game_time from mart (already formatted in Eastern) or format from timestamp
+        game_time_str = row.game_time.strip() if row.game_time else "TBD"
+        # Convert "07:00 PM" format to "7pm" format
+        if game_time_str != "TBD":
+            try:
+                t = datetime.strptime(game_time_str, "%I:%M %p")
+                game_time_str = _format_game_time(t)
+            except ValueError:
+                pass  # Keep original format if parsing fails
 
         # Format spread string
         spread_str = None
@@ -782,11 +1049,78 @@ async def get_dashboard_games(
         h_total_rms = float(getattr(row, 'home_total_rms_stabilized', None) or 12)
         a_total_rms = float(getattr(row, 'away_total_rms_stabilized', None) or 12)
 
+        # Build teaser profiles for each team (historical spread stability metrics)
+        home_teaser_profile = None
+        if getattr(row, 'home_teaser8_rate', None) is not None:
+            home_teaser_profile = TeaserProfile(
+                teaser8SurvivalRate=float(row.home_teaser8_rate) if row.home_teaser8_rate is not None else None,
+                teaser10SurvivalRate=float(row.home_teaser10_rate) if row.home_teaser10_rate is not None else None,
+                within5Rate=float(row.home_within_5_rate) if row.home_within_5_rate is not None else None,
+                within7Rate=float(row.home_within_7_rate) if row.home_within_7_rate is not None else None,
+                within10Rate=float(row.home_within_10_rate) if row.home_within_10_rate is not None else None,
+                blowoutRate=float(row.home_blowout_rate) if row.home_blowout_rate is not None else None,
+                worstCover=float(row.home_worst_cover) if row.home_worst_cover is not None else None,
+                coverStddev=float(row.home_cover_stddev) if row.home_cover_stddev is not None else None,
+            )
+
+        away_teaser_profile = None
+        if getattr(row, 'away_teaser8_rate', None) is not None:
+            away_teaser_profile = TeaserProfile(
+                teaser8SurvivalRate=float(row.away_teaser8_rate) if row.away_teaser8_rate is not None else None,
+                teaser10SurvivalRate=float(row.away_teaser10_rate) if row.away_teaser10_rate is not None else None,
+                within5Rate=float(row.away_within_5_rate) if row.away_within_5_rate is not None else None,
+                within7Rate=float(row.away_within_7_rate) if row.away_within_7_rate is not None else None,
+                within10Rate=float(row.away_within_10_rate) if row.away_within_10_rate is not None else None,
+                blowoutRate=float(row.away_blowout_rate) if row.away_blowout_rate is not None else None,
+                worstCover=float(row.away_worst_cover) if row.away_worst_cover is not None else None,
+                coverStddev=float(row.away_cover_stddev) if row.away_cover_stddev is not None else None,
+            )
+
+        # Build O/U profiles for each team (historical over/under trends)
+        home_ou_profile = None
+        if getattr(row, 'home_over_rate_l10', None) is not None:
+            home_ou_profile = OverUnderProfile(
+                overRateL10=float(row.home_over_rate_l10) if row.home_over_rate_l10 is not None else None,
+                underRateL10=float(row.home_under_rate_l10) if row.home_under_rate_l10 is not None else None,
+                avgTotalMarginL10=float(row.home_avg_total_margin_l10) if row.home_avg_total_margin_l10 is not None else None,
+                avgGameTotalL10=float(row.home_avg_game_total_l10) if row.home_avg_game_total_l10 is not None else None,
+                oversLast3=int(row.home_overs_last_3) if row.home_overs_last_3 is not None else None,
+                undersLast3=int(row.home_unders_last_3) if row.home_unders_last_3 is not None else None,
+                within5TotalRate=float(row.home_within_5_total_rate) if getattr(row, 'home_within_5_total_rate', None) is not None else None,
+                within7TotalRate=float(row.home_within_7_total_rate) if getattr(row, 'home_within_7_total_rate', None) is not None else None,
+                within10TotalRate=float(row.home_within_10_total_rate) if getattr(row, 'home_within_10_total_rate', None) is not None else None,
+            )
+
+        away_ou_profile = None
+        if getattr(row, 'away_over_rate_l10', None) is not None:
+            away_ou_profile = OverUnderProfile(
+                overRateL10=float(row.away_over_rate_l10) if row.away_over_rate_l10 is not None else None,
+                underRateL10=float(row.away_under_rate_l10) if row.away_under_rate_l10 is not None else None,
+                avgTotalMarginL10=float(row.away_avg_total_margin_l10) if row.away_avg_total_margin_l10 is not None else None,
+                avgGameTotalL10=float(row.away_avg_game_total_l10) if row.away_avg_game_total_l10 is not None else None,
+                oversLast3=int(row.away_overs_last_3) if row.away_overs_last_3 is not None else None,
+                undersLast3=int(row.away_unders_last_3) if row.away_unders_last_3 is not None else None,
+                within5TotalRate=float(row.away_within_5_total_rate) if getattr(row, 'away_within_5_total_rate', None) is not None else None,
+                within7TotalRate=float(row.away_within_7_total_rate) if getattr(row, 'away_within_7_total_rate', None) is not None else None,
+                within10TotalRate=float(row.away_within_10_total_rate) if getattr(row, 'away_within_10_total_rate', None) is not None else None,
+            )
+
+        # Fetch distribution data for KDE graphs (shown below last 5 games)
+        home_spread_dist = _get_team_distribution(db, row.home_team_id, "spread")
+        home_total_dist = _get_team_distribution(db, row.home_team_id, "total")
+        away_spread_dist = _get_team_distribution(db, row.away_team_id, "spread")
+        away_total_dist = _get_team_distribution(db, row.away_team_id, "total")
+
+        # Get full team info (display name with mascot, colors)
+        home_display_name, home_primary, home_secondary = _get_team_info_from_db(db, row.home_team)
+        away_display_name, away_primary, away_secondary = _get_team_info_from_db(db, row.away_team)
+
         # Build home team data (records are already formatted as strings like "12-5")
         home_team = DashboardTeamData(
-            name=row.home_team or "TBD",
+            name=home_display_name,
             shortName=_get_short_name(row.home_team),
-            primaryColor=_get_team_color(row.home_team),
+            primaryColor=home_primary,
+            secondaryColor=home_secondary,
             record=row.home_record or "0-0",
             confRecord=row.home_conf_record or "0-0",
             conference=row.home_conference or "",
@@ -805,13 +1139,18 @@ async def get_dashboard_games(
             spreadMeanError=round(h_spread_me, 2),
             totalMeanError=round(h_total_me, 2),
             totalRmsStabilized=round(h_total_rms, 2),
+            teaserProfile=home_teaser_profile,
+            overUnderProfile=home_ou_profile,
+            spreadDistribution=home_spread_dist,
+            totalDistribution=home_total_dist,
         )
 
         # Build away team data
         away_team = DashboardTeamData(
-            name=row.away_team or "TBD",
+            name=away_display_name,
             shortName=_get_short_name(row.away_team),
-            primaryColor=_get_team_color(row.away_team),
+            primaryColor=away_primary,
+            secondaryColor=away_secondary,
             record=row.away_record or "0-0",
             confRecord=row.away_conf_record or "0-0",
             conference=row.away_conference or "",
@@ -830,6 +1169,10 @@ async def get_dashboard_games(
             spreadMeanError=round(a_spread_me, 2),
             totalMeanError=round(a_total_me, 2),
             totalRmsStabilized=round(a_total_rms, 2),
+            teaserProfile=away_teaser_profile,
+            overUnderProfile=away_ou_profile,
+            spreadDistribution=away_spread_dist,
+            totalDistribution=away_total_dist,
         )
 
         # ---- Game-level chaos and teaser calculations ----
@@ -882,11 +1225,70 @@ async def get_dashboard_games(
         elif archetypes == {"Chaos Team"}:
             edge_summary.append("Double Chaos matchup — avoid teasers, expect wild swings")
 
-        # Teaser conclusion
+        # Teaser conclusion (probabilistic)
         if teaser_u10 is not None and teaser_u10 >= 0.90:
             edge_summary.append(f"Teaser +10 lands {teaser_u10*100:.0f}% of the time — strong under teaser play")
         elif teaser_u10 is not None and teaser_u10 >= 0.80:
             edge_summary.append(f"Teaser +10 lands {teaser_u10*100:.0f}% — moderate teaser value")
+
+        # Historical teaser survival insights
+        combined_t8 = getattr(row, 'combined_teaser8_rate', None)
+        combined_t10 = getattr(row, 'combined_teaser10_rate', None)
+        combined_w10 = getattr(row, 'combined_within_10_rate', None)
+
+        if combined_t10 is not None and combined_t10 >= 0.85:
+            edge_summary.append(f"Historical +10 survival: {float(combined_t10)*100:.0f}% — both teams stay close")
+        elif combined_t10 is not None and combined_t10 < 0.65:
+            edge_summary.append(f"Historical +10 survival: {float(combined_t10)*100:.0f}% — blowouts common, avoid teasers")
+
+        if combined_w10 is not None and combined_w10 >= 0.80:
+            edge_summary.append(f"Spread stability: {float(combined_w10)*100:.0f}% of games within 10 pts of line")
+
+        # Historical O/U insights
+        combined_over = getattr(row, 'combined_over_rate_l10', None)
+        combined_under = getattr(row, 'combined_under_rate_l10', None)
+        combined_margin = getattr(row, 'combined_avg_total_margin', None)
+
+        if combined_over is not None and combined_over >= 0.65:
+            edge_summary.append(f"Over trend: {float(combined_over)*100:.0f}% of L10 games went over — lean over")
+        elif combined_under is not None and combined_under >= 0.65:
+            edge_summary.append(f"Under trend: {float(combined_under)*100:.0f}% of L10 games went under — lean under")
+
+        if combined_margin is not None and abs(combined_margin) >= 5:
+            direction = "over" if combined_margin > 0 else "under"
+            edge_summary.append(f"Avg margin vs line: {combined_margin:+.1f} pts — games trend {direction}")
+
+        # Calculate Spread Eagle predictability scores
+        spread_predictability = None
+        total_predictability = None
+        eagle_score = None
+        eagle_verdict = "N/A"
+
+        if home_spread_dist and away_spread_dist:
+            spread_predictability = round(
+                (home_spread_dist.predictability + away_spread_dist.predictability) / 2, 1
+            )
+
+        if home_total_dist and away_total_dist:
+            total_predictability = round(
+                (home_total_dist.predictability + away_total_dist.predictability) / 2, 1
+            )
+
+        if spread_predictability is not None and total_predictability is not None:
+            eagle_score = round((spread_predictability + total_predictability) / 2, 1)
+
+            # Determine verdict based on Spread Eagle score
+            if eagle_score >= 60:
+                eagle_verdict = "SPREAD EAGLE"
+                edge_summary.insert(0, f"🦅 SPREAD EAGLE ({eagle_score:.0f}) — Elite predictability on both spread & total")
+            elif eagle_score >= 50:
+                eagle_verdict = "LEAN TEASER"
+                edge_summary.insert(0, f"Lean Teaser ({eagle_score:.0f}) — Good predictability, consider for teasers")
+            elif eagle_score >= 40:
+                eagle_verdict = "CAUTION"
+            else:
+                eagle_verdict = "AVOID"
+                edge_summary.append("Low predictability — avoid teasers on this game")
 
         games.append(DashboardGame(
             id=row.game_id,
@@ -904,6 +1306,18 @@ async def get_dashboard_games(
             teaserUnder8Prob=teaser_u8,
             teaserUnder10Prob=teaser_u10,
             edgeSummary=edge_summary,
+            combinedTeaser8Rate=float(combined_t8) if combined_t8 is not None else None,
+            combinedTeaser10Rate=float(combined_t10) if combined_t10 is not None else None,
+            combinedWithin10Rate=float(combined_w10) if combined_w10 is not None else None,
+            combinedOverRateL10=float(combined_over) if combined_over is not None else None,
+            combinedUnderRateL10=float(combined_under) if combined_under is not None else None,
+            combinedAvgTotalMargin=float(combined_margin) if combined_margin is not None else None,
+            combinedWithin10TotalRate=float(getattr(row, 'combined_within_10_total_rate', None)) if getattr(row, 'combined_within_10_total_rate', None) is not None else None,
+            # Spread Eagle predictability scores
+            spreadPredictability=spread_predictability,
+            totalPredictability=total_predictability,
+            spreadEagleScore=eagle_score,
+            spreadEagleVerdict=eagle_verdict,
         ))
 
     return DashboardResponse(
@@ -1171,3 +1585,219 @@ async def cbb_health():
         "model_loaded": model_exists,
         "predictions_available": predictions_exist,
     }
+
+
+# =============================================================================
+# TEAM DISTRIBUTION MODELS (for KDE visualization)
+# =============================================================================
+
+class TeamDistributionStats(BaseModel):
+    """Distribution statistics for a single team."""
+    team_id: int
+    team_name: str
+    games: int
+    mean: float
+    median: float
+    std: float
+    iqr: float
+    p5: float
+    p25: float
+    p75: float
+    p95: float
+    min_val: float
+    max_val: float
+    within_8_rate: float
+    within_10_rate: float
+    skewness: float
+    predictability: float
+    margins: List[float]  # Raw margins for frontend KDE calculation
+
+
+class GameDistributionResponse(BaseModel):
+    """Distribution data for both teams in a game matchup."""
+    game_id: int
+    game_date: str
+    home_team: str
+    away_team: str
+    spread: Optional[float]
+    total: Optional[float]
+
+    # Home team distributions
+    home_spread_dist: Optional[TeamDistributionStats]
+    home_total_dist: Optional[TeamDistributionStats]
+
+    # Away team distributions
+    away_spread_dist: Optional[TeamDistributionStats]
+    away_total_dist: Optional[TeamDistributionStats]
+
+    # Combined game predictability
+    combined_spread_predictability: Optional[float]
+    combined_total_predictability: Optional[float]
+    spread_eagle_score: Optional[float]
+
+    # Verdict
+    verdict: str  # "SPREAD EAGLE", "LEAN TEASER", "CAUTION", "AVOID"
+
+
+@router.get(
+    "/distribution/{game_id}",
+    response_model=GameDistributionResponse,
+    summary="Get margin distributions for KDE visualization",
+)
+async def get_game_distributions(
+    game_id: int,
+    date: str = Query(
+        ...,
+        description="Date in YYYY-MM-DD format",
+        examples=["2026-01-31"],
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Get margin distribution data for both teams in a matchup.
+
+    Returns raw margin arrays and distribution statistics for:
+    - Spread (cover_margin) distributions
+    - Total (total_margin) distributions
+
+    Used by frontend for KDE (kernel density estimation) graphs
+    that visualize how predictable each team is.
+    """
+    try:
+        game_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # Get game info
+    game_query = text("""
+        SELECT
+            game_id, game_date, home_team, away_team, home_team_id, away_team_id,
+            spread, total
+        FROM marts_cbb.fct_cbb__game_dashboard
+        WHERE game_id = :game_id AND DATE(game_date) = :game_date
+        LIMIT 1
+    """)
+
+    game_result = db.execute(game_query, {"game_id": game_id, "game_date": game_date}).fetchone()
+
+    if not game_result:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Get distribution stats for each team (try new table first, fallback to raw query)
+    def get_team_distribution(team_id: int, margin_type: str) -> Optional[TeamDistributionStats]:
+        """Get distribution for a team from raw data."""
+        if margin_type == "spread":
+            table = "intermediate_cbb.int_cbb__team_spread_volatility"
+            margin_col = "cover_margin"
+        else:
+            table = "intermediate_cbb.int_cbb__team_ou_trends"
+            margin_col = "total_margin"
+
+        query = text(f"""
+            SELECT
+                team_id,
+                team_name,
+                {margin_col} as margin
+            FROM {table}
+            WHERE team_id = :team_id
+              AND season = 2026
+              AND {margin_col} IS NOT NULL
+            ORDER BY game_date
+        """)
+
+        result = db.execute(query, {"team_id": team_id}).fetchall()
+
+        if len(result) < 5:
+            return None
+
+        margins = [float(r.margin) for r in result]
+        team_name = result[0].team_name
+
+        # Calculate stats (using module-level numpy import)
+        margins_arr = np.array(margins)
+
+        mean = float(np.mean(margins_arr))
+        median = float(np.median(margins_arr))
+        std = float(np.std(margins_arr))
+        p5, p25, p75, p95 = [float(np.percentile(margins_arr, p)) for p in [5, 25, 75, 95]]
+        iqr = p75 - p25
+
+        within_8 = float(np.mean(np.abs(margins_arr) < 8))
+        within_10 = float(np.mean(np.abs(margins_arr) < 10))
+
+        # Skewness approximation
+        skewness = 3 * (mean - median) / std if std > 0 else 0
+
+        # Predictability score
+        std_score = max(0, min(100, 100 - (std - 5) * (100 / 15)))
+        iqr_score = max(0, min(100, 50 - iqr * 2))
+        w10_score = within_10 * 100
+        predictability = std_score * 0.3 + iqr_score * 0.2 + w10_score * 0.5
+
+        return TeamDistributionStats(
+            team_id=team_id,
+            team_name=team_name,
+            games=len(margins),
+            mean=round(mean, 2),
+            median=round(median, 2),
+            std=round(std, 2),
+            iqr=round(iqr, 2),
+            p5=round(p5, 2),
+            p25=round(p25, 2),
+            p75=round(p75, 2),
+            p95=round(p95, 2),
+            min_val=round(float(np.min(margins_arr)), 2),
+            max_val=round(float(np.max(margins_arr)), 2),
+            within_8_rate=round(within_8, 3),
+            within_10_rate=round(within_10, 3),
+            skewness=round(skewness, 3),
+            predictability=round(predictability, 1),
+            margins=margins
+        )
+
+    # Get distributions for both teams
+    home_spread = get_team_distribution(game_result.home_team_id, "spread")
+    home_total = get_team_distribution(game_result.home_team_id, "total")
+    away_spread = get_team_distribution(game_result.away_team_id, "spread")
+    away_total = get_team_distribution(game_result.away_team_id, "total")
+
+    # Calculate combined scores
+    combined_spread = None
+    combined_total = None
+    eagle_score = None
+
+    if home_spread and away_spread:
+        combined_spread = (home_spread.predictability + away_spread.predictability) / 2
+
+    if home_total and away_total:
+        combined_total = (home_total.predictability + away_total.predictability) / 2
+
+    if combined_spread and combined_total:
+        eagle_score = (combined_spread + combined_total) / 2
+
+    # Determine verdict
+    if eagle_score and eagle_score >= 60:
+        verdict = "SPREAD EAGLE"
+    elif eagle_score and eagle_score >= 50:
+        verdict = "LEAN TEASER"
+    elif eagle_score and eagle_score >= 40:
+        verdict = "CAUTION"
+    else:
+        verdict = "AVOID"
+
+    return GameDistributionResponse(
+        game_id=game_id,
+        game_date=str(game_date),
+        home_team=game_result.home_team,
+        away_team=game_result.away_team,
+        spread=float(game_result.spread) if game_result.spread else None,
+        total=float(game_result.total) if game_result.total else None,
+        home_spread_dist=home_spread,
+        home_total_dist=home_total,
+        away_spread_dist=away_spread,
+        away_total_dist=away_total,
+        combined_spread_predictability=round(combined_spread, 1) if combined_spread else None,
+        combined_total_predictability=round(combined_total, 1) if combined_total else None,
+        spread_eagle_score=round(eagle_score, 1) if eagle_score else None,
+        verdict=verdict
+    )
