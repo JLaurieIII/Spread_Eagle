@@ -83,10 +83,12 @@ ordered_games as (
         -- Teaser outcomes (did +8 or +10 pts result in covering?)
         case when cover_margin >= -8 then 1 else 0 end as teaser_8_win,
         case when cover_margin >= -10 then 1 else 0 end as teaser_10_win,
-        -- Close game indicators
-        case when abs(cover_margin) <= 5 then 1 else 0 end as within_5,
-        case when abs(cover_margin) <= 7 then 1 else 0 end as within_7,
-        case when abs(cover_margin) <= 10 then 1 else 0 end as within_10,
+        -- Close game indicators (exclusive: < not <= because exactly at boundary = loss)
+        case when abs(cover_margin) < 5 then 1 else 0 end as within_5,
+        case when abs(cover_margin) < 6 then 1 else 0 end as within_6,
+        case when abs(cover_margin) < 7 then 1 else 0 end as within_7,
+        case when abs(cover_margin) < 8 then 1 else 0 end as within_8,
+        case when abs(cover_margin) < 10 then 1 else 0 end as within_10,
         -- Blowout loss indicator (lost by 15+ after spread)
         case when cover_margin <= -15 then 1 else 0 end as blowout_loss,
         -- Game number within season
@@ -110,6 +112,13 @@ rolling_volatility as (
         cover_margin,
         teaser_8_win,
         teaser_10_win,
+        -- Raw within_X flags for this game (for testing/debugging)
+        within_5,
+        within_6,
+        within_7,
+        within_8,
+        within_10,
+        blowout_loss,
         season_game_num,
 
         -- Games played (excluding current)
@@ -127,7 +136,9 @@ rolling_volatility as (
         -- CLOSE GAME RATES (higher = more predictable)
         -- =======================================================================
         avg(within_5::float) over w_prev_10 as within_5_rate_l10,
+        avg(within_6::float) over w_prev_10 as within_6_rate_l10,
         avg(within_7::float) over w_prev_10 as within_7_rate_l10,
+        avg(within_8::float) over w_prev_10 as within_8_rate_l10,
         avg(within_10::float) over w_prev_10 as within_10_rate_l10,
 
         -- =======================================================================

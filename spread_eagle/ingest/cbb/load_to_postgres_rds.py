@@ -96,7 +96,7 @@ JSONB_COLUMNS = [
 
 
 def get_connection():
-    """Get AWS RDS PostgreSQL connection (SSL required)."""
+    """Get AWS RDS PostgreSQL connection."""
     return psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -104,7 +104,7 @@ def get_connection():
         user=DB_USER,
         password=DB_PASSWORD,
         connect_timeout=30,
-        sslmode="require",  # Required for AWS RDS
+        sslmode="prefer",  # Try SSL, fall back if not available
     )
 
 
