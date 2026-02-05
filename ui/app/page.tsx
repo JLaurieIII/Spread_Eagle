@@ -28,6 +28,169 @@ import SpreadEaglePreview from "@/components/game-detail/SpreadEaglePreview";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ============================================================================
+// Team Logo Mapping
+// ============================================================================
+
+type TeamLogoMapping = {
+  [teamId: string]: {
+    display_name: string;
+    filename: string;
+    school: string;
+    slug: string;
+  };
+};
+
+// Load team logo mapping
+async function fetchTeamLogos(): Promise<TeamLogoMapping> {
+  try {
+    const response = await fetch("/logos/cbb/team-logos.json");
+    if (!response.ok) return {};
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+// Manual aliases for teams with different naming conventions
+const TEAM_ALIASES: Record<string, string> = {
+  // Abbreviations -> full names in mapping
+  "byu": "brigham-young-college.gif",
+  "brigham young": "brigham-young-college.gif",
+  "ucf": "central_florida.png",
+  "vcu": "virginia-commonwealth.gif",
+  "uconn": "connecticut.gif",
+  "lsu": "lsu.gif",
+  "usc": "southern-california.gif",
+  "ucla": "ucla.gif",
+  "smu": "smu.gif",
+  "tcu": "tcu.gif",
+  "unlv": "unlv.gif",
+  "utep": "utep.gif",
+  // Common alternate names
+  "ole miss": "mississippi.gif",
+  "nc state": "north-carolina-state.gif",
+  "app state": "appalachian_state.png",
+  "appalachian state": "appalachian_state.png",
+  "penn": "penn.png",
+  "upenn": "penn.png",
+  "pitt": "pittsburgh.gif",
+  "miami (fl)": "miami-florida.gif",
+  "miami (oh)": "miami-ohio.gif",
+  // UNC system
+  "unc asheville": "asheville.png",
+  "unc greensboro": "nc-greensboro.png",
+  "unc wilmington": "nc-wilmington.png",
+  // UC system
+  "uc davis": "california_davis.png",
+  "uc irvine": "2361_california-irvine.png",
+  "uc santa barbara": "ucsb.png",
+  "ucsb": "ucsb.png",
+  "uc riverside": "uc-riverside.gif",
+  "uc san diego": "uc-san-diego.gif",
+  // UT system
+  "ut arlington": "texas-arlington.png",
+  "ut rio grande valley": "utrgv.gif",
+  "utsa": "texas-sa.png",
+  // Loyola schools
+  "loyola chicago": "loyola-chicago.gif",
+  "loyola maryland": "loyola-maryland.png",
+  // State abbreviations
+  "se louisiana": "southeastern-louisiana.gif",
+  "southeast missouri state": "se_missouri_state.png",
+  "east tennessee state": "4978_etsu.png",
+  "etsu": "4978_etsu.png",
+  // Wisconsin system
+  "green bay": "wisconsin-green_bay.png",
+  "milwaukee": "2381_wisconsin-milwaukee.png",
+  // Others
+  "sam houston": "7833_sam_houston_state.png",
+  "long island university": "4510_liu.png",
+  "liu": "4510_liu.png",
+  "william & mary": "william_and_mary.png",
+  "saint joseph's": "st-josephs.png",
+  "st. joseph's": "st-josephs.png",
+  "st. francis brooklyn": "st-francis-brooklyn.gif",
+  "seattle u": "1754_seattle.png",
+  "uic": "illinois-chicago.gif",
+  "ul monroe": "louisiana-monroe.png",
+  "omaha": "6320_nebraska_omaha.png",
+  "charleston southern": "csu.png",
+  "csu": "csu.png",
+  "mississippi valley state": "mississippi-valley-state.gif",
+  "north florida": "unf.png",
+  "unf": "unf.png",
+  "west georgia": "west-georgia.gif",
+  "tarleton state": "tarleton.png",
+  "east texas a&m": "east-texas-am.gif",
+  "cal state bakersfield": "csu_bakersfield.png",
+  "san josé state": "san-jose-state.gif",
+  "san jose state": "san-jose-state.gif",
+  "utah tech": "utah_tech.png",
+  "queens": "queens.png",
+};
+
+// Create lookup by multiple name variations (case-insensitive)
+function createLogoLookup(mapping: TeamLogoMapping): Map<string, string> {
+  const lookup = new Map<string, string>();
+
+  // Add manual aliases first
+  for (const [alias, filename] of Object.entries(TEAM_ALIASES)) {
+    lookup.set(alias.toLowerCase(), filename);
+  }
+
+  // Add from mapping file
+  for (const entry of Object.values(mapping)) {
+    // Add by school name (exact)
+    lookup.set(entry.school.toLowerCase(), entry.filename);
+    // Add by slug
+    lookup.set(entry.slug.toLowerCase(), entry.filename);
+    // Add by display name (full name with mascot)
+    lookup.set(entry.display_name.toLowerCase(), entry.filename);
+  }
+  return lookup;
+}
+
+// Find logo filename with fallback matching
+function findLogo(teamName: string, shortName: string, logoLookup: Map<string, string>): string | undefined {
+  const teamLower = teamName.toLowerCase();
+  const shortLower = shortName.toLowerCase();
+
+  // Try exact match on full name
+  let match = logoLookup.get(teamLower);
+  if (match) return match;
+
+  // Try short name
+  match = logoLookup.get(shortLower);
+  if (match) return match;
+
+  // Try matching without common suffixes (Tar Heels, Orange, etc.)
+  const suffixes = [" tar heels", " orange", " wildcats", " bulldogs", " tigers", " eagles", " bears", " hawks", " lions", " panthers", " cardinals", " devils", " warriors", " knights", " huskies", " bruins", " trojans", " aggies", " vaqueros"];
+  for (const suffix of suffixes) {
+    if (teamLower.endsWith(suffix)) {
+      const schoolOnly = teamLower.slice(0, -suffix.length);
+      match = logoLookup.get(schoolOnly);
+      if (match) return match;
+    }
+  }
+
+  // Try partial match BUT be strict:
+  // Only match if key matches start of team name AND team doesn't have extra qualifiers
+  const qualifiers = ["central", "state", "a&t", "a&m", "southern", "northern", "eastern", "western", "tech", "pine bluff", "ohio"];
+  for (const [key, filename] of logoLookup.entries()) {
+    if (key.length > 4 && teamLower.startsWith(key)) {
+      // Check if team has extra qualifier words after the matched key
+      const remainder = teamLower.slice(key.length).trim();
+      const hasQualifier = qualifiers.some(q => remainder.includes(q));
+      if (!hasQualifier) {
+        return filename;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+// ============================================================================
 // Types (matching API response)
 // ============================================================================
 
@@ -87,6 +250,43 @@ type DistributionData = {
   predictability: number;
 };
 
+// ============================================================================
+// Margin Theater Types (Interactive Distribution Filtering)
+// ============================================================================
+
+type MarginDataPoint = {
+  margin: number;
+  isHome: boolean;
+  isFavorite: boolean;
+  isConference: boolean;
+  prevResult: "W" | "L" | null;
+  restDays: number | null;
+};
+
+type TheaterDistributionData = {
+  dataPoints: MarginDataPoint[];
+  mean: number;
+  std: number;
+  predictability: number;
+  count: number;
+};
+
+type MarginFilters = {
+  role: "all" | "favorite" | "underdog";
+  venue: "all" | "home" | "away";
+  gameType: "all" | "conference" | "non-conference";
+  momentum: "all" | "after-win" | "after-loss";
+  rest: "all" | "0" | "1" | "2+";
+};
+
+const DEFAULT_FILTERS: MarginFilters = {
+  role: "all",
+  venue: "all",
+  gameType: "all",
+  momentum: "all",
+  rest: "all",
+};
+
 type TeamData = {
   name: string;
   shortName: string;
@@ -119,6 +319,9 @@ type TeamData = {
   // Distribution data for KDE graphs
   spreadDistribution: DistributionData | null;
   totalDistribution: DistributionData | null;
+  // Margin Theater data (interactive filter distributions)
+  spreadTheater: TheaterDistributionData | null;
+  totalTheater: TheaterDistributionData | null;
 };
 
 type CBBGame = {
@@ -377,6 +580,20 @@ function KDEGraph({
         {/* Mean marker */}
         <circle cx={scaleX(mean)} cy={scaleY(yValues[Math.round(((mean - xMin) / (xMax - xMin)) * (points - 1))] || 0)} r={4} fill={color} />
 
+        {/* Data point tick marks for validation */}
+        {margins.map((m, i) => (
+          <line
+            key={i}
+            x1={scaleX(Math.max(xMin, Math.min(xMax, m)))}
+            y1={padding.top + graphHeight - 8}
+            x2={scaleX(Math.max(xMin, Math.min(xMax, m)))}
+            y2={padding.top + graphHeight}
+            stroke={color}
+            strokeWidth={1.5}
+            opacity={0.6}
+          />
+        ))}
+
         {/* X-axis */}
         <line
           x1={padding.left}
@@ -408,6 +625,331 @@ function KDEGraph({
           Safe zone (±10)
         </span>
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Margin Theater - Interactive Filter Hook
+// ============================================================================
+
+function useFilteredMargins(
+  dataPoints: MarginDataPoint[] | undefined,
+  filters: MarginFilters
+): { margins: number[]; stats: { mean: number; std: number; predictability: number }; count: number } | null {
+  return useMemo(() => {
+    if (!dataPoints || dataPoints.length < 3) return null;
+
+    let filtered = dataPoints;
+
+    // Apply filters
+    if (filters.role === "favorite") filtered = filtered.filter((d) => d.isFavorite);
+    if (filters.role === "underdog") filtered = filtered.filter((d) => !d.isFavorite);
+    if (filters.venue === "home") filtered = filtered.filter((d) => d.isHome);
+    if (filters.venue === "away") filtered = filtered.filter((d) => !d.isHome);
+    if (filters.gameType === "conference") filtered = filtered.filter((d) => d.isConference);
+    if (filters.gameType === "non-conference") filtered = filtered.filter((d) => !d.isConference);
+    if (filters.momentum === "after-win") filtered = filtered.filter((d) => d.prevResult === "W");
+    if (filters.momentum === "after-loss") filtered = filtered.filter((d) => d.prevResult === "L");
+    if (filters.rest === "0") filtered = filtered.filter((d) => d.restDays === 0 || d.restDays === 1);
+    if (filters.rest === "1") filtered = filtered.filter((d) => d.restDays === 2);
+    if (filters.rest === "2+") filtered = filtered.filter((d) => d.restDays !== null && d.restDays >= 3);
+
+    if (filtered.length < 3) return null;
+
+    const margins = filtered.map((d) => d.margin);
+    const mean = margins.reduce((a, b) => a + b, 0) / margins.length;
+    const variance = margins.reduce((sum, m) => sum + Math.pow(m - mean, 2), 0) / margins.length;
+    const std = Math.sqrt(variance);
+    const within10 = margins.filter((m) => Math.abs(m) < 10).length / margins.length;
+
+    // Simplified predictability formula
+    const stdScore = Math.max(0, Math.min(100, 100 - (std - 5) * (100 / 15)));
+    const w10Score = within10 * 100;
+    const predictability = stdScore * 0.5 + w10Score * 0.5;
+
+    return {
+      margins,
+      stats: {
+        mean: Math.round(mean * 100) / 100,
+        std: Math.round(std * 100) / 100,
+        predictability: Math.round(predictability * 10) / 10,
+      },
+      count: filtered.length,
+    };
+  }, [dataPoints, filters]);
+}
+
+// ============================================================================
+// Margin Theater Filter Component
+// ============================================================================
+
+function MarginTheaterFilters({
+  filters,
+  onFiltersChange,
+  color,
+}: {
+  filters: MarginFilters;
+  onFiltersChange: (filters: MarginFilters) => void;
+  color: string;
+}) {
+  const FilterGroup = ({
+    label,
+    options,
+    value,
+    onChange,
+  }: {
+    label: string;
+    options: { value: string; label: string }[];
+    value: string;
+    onChange: (val: string) => void;
+  }) => (
+    <div className="flex items-center gap-1">
+      <span className="text-[10px] text-slate-400 mr-1">{label}:</span>
+      <div className="flex rounded overflow-hidden border border-white/20">
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className="px-1.5 py-0.5 text-[10px] font-medium transition-colors"
+            style={{
+              backgroundColor: value === opt.value ? color : "transparent",
+              color: value === opt.value ? "#fff" : "#94a3b8",
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-wrap gap-2 mb-2">
+      <FilterGroup
+        label="Role"
+        options={[
+          { value: "all", label: "All" },
+          { value: "favorite", label: "Fav" },
+          { value: "underdog", label: "Dog" },
+        ]}
+        value={filters.role}
+        onChange={(v) => onFiltersChange({ ...filters, role: v as MarginFilters["role"] })}
+      />
+      <FilterGroup
+        label="Venue"
+        options={[
+          { value: "all", label: "All" },
+          { value: "home", label: "Home" },
+          { value: "away", label: "Away" },
+        ]}
+        value={filters.venue}
+        onChange={(v) => onFiltersChange({ ...filters, venue: v as MarginFilters["venue"] })}
+      />
+      <FilterGroup
+        label="Game"
+        options={[
+          { value: "all", label: "All" },
+          { value: "conference", label: "Conf" },
+          { value: "non-conference", label: "Non" },
+        ]}
+        value={filters.gameType}
+        onChange={(v) => onFiltersChange({ ...filters, gameType: v as MarginFilters["gameType"] })}
+      />
+      <FilterGroup
+        label="After"
+        options={[
+          { value: "all", label: "All" },
+          { value: "after-win", label: "W" },
+          { value: "after-loss", label: "L" },
+        ]}
+        value={filters.momentum}
+        onChange={(v) => onFiltersChange({ ...filters, momentum: v as MarginFilters["momentum"] })}
+      />
+      <FilterGroup
+        label="Rest"
+        options={[
+          { value: "all", label: "All" },
+          { value: "0", label: "B2B" },
+          { value: "1", label: "1d" },
+          { value: "2+", label: "2+" },
+        ]}
+        value={filters.rest}
+        onChange={(v) => onFiltersChange({ ...filters, rest: v as MarginFilters["rest"] })}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+// KDE Graph Theater Component (with interactive filters)
+// ============================================================================
+
+function KDEGraphTheater({
+  data,
+  color,
+  label,
+}: {
+  data: TheaterDistributionData;
+  color: string;
+  label: string;
+}) {
+  const [filters, setFilters] = useState<MarginFilters>(DEFAULT_FILTERS);
+  const filtered = useFilteredMargins(data.dataPoints, filters);
+
+  // Use filtered data or fall back to full data
+  const margins = filtered?.margins ?? data.dataPoints.map((d) => d.margin);
+  const stats = filtered?.stats ?? { mean: data.mean, std: data.std, predictability: data.predictability };
+  const count = filtered?.count ?? data.count;
+
+  // Check if any filters are active
+  const hasActiveFilters = Object.entries(filters).some(([_, v]) => v !== "all");
+
+  // Generate KDE curve
+  const bandwidth = stats.std * 0.5 || 5;
+  const xMin = -30;
+  const xMax = 30;
+  const points = 60;
+  const xValues = Array.from({ length: points }, (_, i) => xMin + (i * (xMax - xMin)) / (points - 1));
+
+  const gaussian = (x: number, xi: number) =>
+    Math.exp(-0.5 * Math.pow((x - xi) / bandwidth, 2)) / (bandwidth * Math.sqrt(2 * Math.PI));
+
+  const yValues = xValues.map((x) => {
+    if (margins.length === 0) return 0;
+    return margins.reduce((sum, xi) => sum + gaussian(x, xi), 0) / margins.length;
+  });
+
+  const maxY = Math.max(...yValues, 0.001);
+
+  // SVG dimensions
+  const width = 340;
+  const height = 120;
+  const padding = { top: 12, right: 12, bottom: 28, left: 12 };
+  const graphWidth = width - padding.left - padding.right;
+  const graphHeight = height - padding.top - padding.bottom;
+
+  const scaleX = (x: number) => padding.left + ((x - xMin) / (xMax - xMin)) * graphWidth;
+  const scaleY = (y: number) => padding.top + graphHeight - (y / maxY) * graphHeight;
+
+  const pathData = yValues
+    .map((y, i) => `${i === 0 ? "M" : "L"} ${scaleX(xValues[i])} ${scaleY(y)}`)
+    .join(" ");
+
+  const fillPath = pathData + ` L ${scaleX(xMax)} ${scaleY(0)} L ${scaleX(xMin)} ${scaleY(0)} Z`;
+
+  const zone10 = scaleX(10);
+  const zoneNeg10 = scaleX(-10);
+
+  const predColor = stats.predictability >= 60 ? "#22c55e" : stats.predictability >= 50 ? "#eab308" : "#ef4444";
+
+  return (
+    <div className="rounded-lg p-3" style={{ backgroundColor: "rgba(255,255,255,0.95)" }}>
+      {/* Header with label and stats */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-semibold" style={{ color: "#1e293b" }}>
+          {label}
+          {hasActiveFilters && (
+            <span className="ml-2 text-xs font-normal text-amber-600">(filtered)</span>
+          )}
+        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs" style={{ color: "#64748b" }}>n={count}</span>
+          <span className="text-xs" style={{ color: "#64748b" }}>σ={stats.std.toFixed(1)}</span>
+          <span
+            className="text-xs font-bold px-2 py-0.5 rounded"
+            style={{ backgroundColor: predColor + "20", color: predColor }}
+          >
+            {stats.predictability.toFixed(0)}
+          </span>
+        </div>
+      </div>
+
+      {/* Filter controls */}
+      <MarginTheaterFilters filters={filters} onFiltersChange={setFilters} color={color} />
+
+      {/* Graph */}
+      {count >= 3 ? (
+        <svg width={width} height={height} className="overflow-visible">
+          {/* Safe zone */}
+          <rect
+            x={zoneNeg10}
+            y={padding.top}
+            width={zone10 - zoneNeg10}
+            height={graphHeight}
+            fill="#22c55e"
+            opacity={0.1}
+          />
+
+          {/* Zero line */}
+          <line
+            x1={scaleX(0)}
+            y1={padding.top}
+            x2={scaleX(0)}
+            y2={padding.top + graphHeight}
+            stroke="#1e293b"
+            strokeOpacity={0.4}
+            strokeWidth={1.5}
+            strokeDasharray="4,4"
+          />
+
+          {/* KDE fill */}
+          <path d={fillPath} fill={color} fillOpacity={0.2} />
+
+          {/* KDE line */}
+          <path d={pathData} fill="none" stroke={color} strokeWidth={2.5} />
+
+          {/* Mean marker */}
+          <circle
+            cx={scaleX(stats.mean)}
+            cy={scaleY(yValues[Math.round(((stats.mean - xMin) / (xMax - xMin)) * (points - 1))] || 0)}
+            r={4}
+            fill={color}
+          />
+
+          {/* Data point tick marks */}
+          {margins.map((m, i) => (
+            <line
+              key={i}
+              x1={scaleX(Math.max(xMin, Math.min(xMax, m)))}
+              y1={padding.top + graphHeight - 8}
+              x2={scaleX(Math.max(xMin, Math.min(xMax, m)))}
+              y2={padding.top + graphHeight}
+              stroke={color}
+              strokeWidth={1.5}
+              opacity={0.6}
+            />
+          ))}
+
+          {/* X-axis */}
+          <line
+            x1={padding.left}
+            y1={padding.top + graphHeight}
+            x2={padding.left + graphWidth}
+            y2={padding.top + graphHeight}
+            stroke="#1e293b"
+            strokeOpacity={0.3}
+            strokeWidth={1.5}
+          />
+
+          {/* X-axis labels */}
+          {[-20, -10, 0, 10, 20].map((tick) => (
+            <text
+              key={tick}
+              x={scaleX(tick)}
+              y={height - 4}
+              textAnchor="middle"
+              style={{ fill: "#1e293b", fontSize: "13px", fontWeight: 600 }}
+            >
+              {tick > 0 ? "+" : ""}{tick}
+            </text>
+          ))}
+        </svg>
+      ) : (
+        <div className="h-[120px] flex items-center justify-center text-sm text-slate-400">
+          Not enough data with these filters ({count} games)
+        </div>
+      )}
     </div>
   );
 }
@@ -848,11 +1390,21 @@ function MiniGameTile({
   game,
   isSelected,
   onClick,
+  logoLookup,
+  showPredictability = false,
 }: {
   game: CBBGame;
   isSelected: boolean;
   onClick: () => void;
+  logoLookup: Map<string, string>;
+  showPredictability?: boolean;
 }) {
+  const awayLogo = findLogo(game.awayTeam.name, game.awayTeam.shortName, logoLookup);
+  const homeLogo = findLogo(game.homeTeam.name, game.homeTeam.shortName, logoLookup);
+
+  // Combined spread predictability (average)
+  const combinedPred = ((game.homeTeam.spreadDistribution?.predictability ?? 0) +
+                       (game.awayTeam.spreadDistribution?.predictability ?? 0)) / 2;
   return (
     <button
       onClick={onClick}
@@ -907,12 +1459,25 @@ function MiniGameTile({
             >
               {game.homeTeam.conference}
             </span>
-            <span
-              className="text-[9px] font-bold tracking-wider"
-              style={{ color: "#64748b" }}
-            >
-              {game.gameTime}
-            </span>
+            <div className="flex items-center gap-2">
+              {showPredictability && combinedPred >= 60 && (
+                <span
+                  className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                  style={{
+                    background: combinedPred >= 65 ? "#22c55e" : "#eab308",
+                    color: "#fff"
+                  }}
+                >
+                  {Math.round(combinedPred)}%
+                </span>
+              )}
+              <span
+                className="text-[9px] font-bold tracking-wider"
+                style={{ color: "#64748b" }}
+              >
+                {game.gameTime}
+              </span>
+            </div>
           </div>
 
           {/* Teams section */}
@@ -920,6 +1485,13 @@ function MiniGameTile({
             {/* Away Team */}
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                {awayLogo && (
+                  <img
+                    src={`/logos/cbb/${awayLogo}`}
+                    alt=""
+                    className="w-5 h-5 object-contain flex-shrink-0"
+                  />
+                )}
                 {game.awayTeam.rank && (
                   <span
                     className="text-[10px] font-bold flex-shrink-0"
@@ -953,6 +1525,13 @@ function MiniGameTile({
             {/* Home Team */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                {homeLogo && (
+                  <img
+                    src={`/logos/cbb/${homeLogo}`}
+                    alt=""
+                    className="w-5 h-5 object-contain flex-shrink-0"
+                  />
+                )}
                 {game.homeTeam.rank && (
                   <span
                     className="text-[10px] font-bold flex-shrink-0"
@@ -1018,20 +1597,6 @@ function MiniGameTile({
               )}
             </div>
 
-            {/* Chaos badge */}
-            {game.chaosRating != null && (() => {
-              const cc = getChaosColor(game.chaosLabel ?? "MODERATE");
-              return (
-                <span
-                  className={cn(
-                    "text-[10px] font-bold px-1.5 py-0.5 rounded border",
-                    cc.bg, cc.text, cc.border
-                  )}
-                >
-                  {game.chaosRating.toFixed(1)}
-                </span>
-              );
-            })()}
           </div>
         </div>
       </div>
@@ -1043,10 +1608,11 @@ function MiniGameTile({
 // Components - Team Card (detailed view)
 // ============================================================================
 
-function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
+function TeamCard({ team, isHome, logoLookup }: { team: TeamData; isHome: boolean; logoLookup: Map<string, string> }) {
   // Use secondary color or fallback to white
   const secondaryColor = team.secondaryColor || "#ffffff";
   const textColor = "#ffffff";
+  const logoFilename = findLogo(team.name, team.shortName, logoLookup);
 
   return (
     <div
@@ -1059,19 +1625,35 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
       {/* Header */}
       <div className="px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-3">
-          {/* Logo circle with secondary color */}
-          <div
-            className="w-14 h-14 rounded-full flex items-center justify-center text-2xl shadow-sm border-2"
-            style={{
-              backgroundColor: secondaryColor,
-              color: team.primaryColor,
-              borderColor: textColor + "40",
-              fontFamily: "'Segoe UI', 'Roboto', sans-serif",
-              fontWeight: 900,
-            }}
-          >
-            {team.shortName.charAt(0)}
-          </div>
+          {/* Team Logo or fallback letter */}
+          {logoFilename ? (
+            <div
+              className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm border-2 overflow-hidden"
+              style={{
+                backgroundColor: "#ffffff",
+                borderColor: secondaryColor,
+              }}
+            >
+              <img
+                src={`/logos/cbb/${logoFilename}`}
+                alt={team.name}
+                className="w-10 h-10 object-contain"
+              />
+            </div>
+          ) : (
+            <div
+              className="w-14 h-14 rounded-full flex items-center justify-center text-2xl shadow-sm border-2"
+              style={{
+                backgroundColor: secondaryColor,
+                color: team.primaryColor,
+                borderColor: textColor + "40",
+                fontFamily: "'Segoe UI', 'Roboto', sans-serif",
+                fontWeight: 900,
+              }}
+            >
+              {team.shortName.charAt(0)}
+            </div>
+          )}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               {team.rank && (
@@ -1121,11 +1703,11 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
           ].map((stat) => (
             <div
               key={stat.label}
-              className="flex-1 rounded-lg px-3 py-2 text-center"
+              className="flex-1 rounded-lg px-2 py-1.5 text-center"
               style={{ backgroundColor: "rgba(255,255,255,0.2)", border: `2px solid ${textColor}40` }}
             >
-              <div className="text-xl" style={{ color: textColor, fontFamily: "'Segoe UI', sans-serif", fontWeight: 800 }}>{stat.value}</div>
-              <div className="uppercase text-xs" style={{ color: textColor + "cc", fontFamily: "'Segoe UI', sans-serif", fontWeight: 600, letterSpacing: "0.05em" }}>{stat.label}</div>
+              <div className="text-sm whitespace-nowrap" style={{ color: textColor, fontFamily: "'Segoe UI', sans-serif", fontWeight: 800 }}>{stat.value}</div>
+              <div className="uppercase text-[10px]" style={{ color: textColor + "cc", fontFamily: "'Segoe UI', sans-serif", fontWeight: 600, letterSpacing: "0.05em" }}>{stat.label}</div>
             </div>
           ))}
         </div>
@@ -1258,6 +1840,30 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
             )}
           </div>
         )}
+
+        {/* Margin Theater - Interactive Filtered Distributions */}
+        {team.spreadTheater && team.spreadTheater.dataPoints.length >= 5 && (
+          <div className="pt-3 border-t border-white/10 space-y-3">
+            <div
+              className="text-xs uppercase tracking-wide mb-2 font-semibold"
+              style={{ color: textColor + "99" }}
+            >
+              Margin Theater
+            </div>
+            <KDEGraphTheater
+              data={team.spreadTheater}
+              color={team.primaryColor}
+              label="Spread by Situation"
+            />
+            {team.totalTheater && team.totalTheater.dataPoints.length >= 5 && (
+              <KDEGraphTheater
+                data={team.totalTheater}
+                color={team.primaryColor}
+                label="O/U by Situation"
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1267,7 +1873,9 @@ function TeamCard({ team, isHome }: { team: TeamData; isHome: boolean }) {
 // Components - Game Detail Dashboard
 // ============================================================================
 
-function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate: string }) {
+function GameDetailDashboard({ game, currentDate, logoLookup }: { game: CBBGame; currentDate: string; logoLookup: Map<string, string> }) {
+  const awayLogo = findLogo(game.awayTeam.name, game.awayTeam.shortName, logoLookup);
+  const homeLogo = findLogo(game.homeTeam.name, game.homeTeam.shortName, logoLookup);
   return (
     <div className="space-y-4">
       {/* ===== TICKET STUB HEADER (WINNER) ===== */}
@@ -1299,91 +1907,143 @@ function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate
             </span>
           </div>
 
-          <div className="p-6">
-            {/* Teams */}
-            <div className="flex items-center justify-center gap-8 mb-6">
-              <div className="text-right">
-                {game.awayTeam.rank && (
-                  <span className="text-xs font-semibold" style={{ color: "#64748b" }}>#{game.awayTeam.rank}</span>
+          <div className="p-4">
+            {/* 3-column layout: Logo | Content | Logo */}
+            <div className="flex items-stretch gap-4">
+              {/* AWAY TEAM LOGO - LEFT (large, full height) */}
+              <div className="w-44 flex-shrink-0 flex items-center justify-center">
+                {awayLogo ? (
+                  <img
+                    src={`/logos/cbb/${awayLogo}`}
+                    alt={game.awayTeam.name}
+                    className="w-40 h-40 object-contain"
+                    style={{ mixBlendMode: "multiply" }}
+                  />
+                ) : (
+                  <div
+                    className="w-36 h-36 rounded-full flex items-center justify-center text-5xl font-black border-2"
+                    style={{
+                      backgroundColor: game.awayTeam.secondaryColor || "#ffffff",
+                      color: game.awayTeam.primaryColor,
+                      borderColor: game.awayTeam.primaryColor + "40",
+                    }}
+                  >
+                    {game.awayTeam.shortName.charAt(0)}
+                  </div>
                 )}
-                <div
-                  className="text-2xl font-black uppercase"
-                  style={{
-                    color: game.awayTeam.primaryColor,
-                    fontFamily: "var(--font-oswald), 'Oswald', sans-serif"
-                  }}
-                >
-                  {game.awayTeam.shortName}
+              </div>
+
+              {/* CENTER CONTENT */}
+              <div className="flex-1 flex flex-col justify-center">
+                {/* Team names row */}
+                <div className="flex items-center justify-center gap-4 mb-4">
+                  <div className="text-right">
+                    {game.awayTeam.rank && (
+                      <span className="text-xs font-semibold" style={{ color: "#64748b" }}>#{game.awayTeam.rank}</span>
+                    )}
+                    <div
+                      className="text-2xl font-black uppercase"
+                      style={{
+                        color: game.awayTeam.primaryColor,
+                        fontFamily: "var(--font-oswald), 'Oswald', sans-serif"
+                      }}
+                    >
+                      {game.awayTeam.shortName}
+                    </div>
+                    <div className="text-xs font-semibold mt-0.5" style={{ color: "#64748b" }}>
+                      {game.awayTeam.name}
+                    </div>
+                  </div>
+
+                  <div className="text-2xl font-black" style={{ color: "#0f2557" }}>
+                    VS
+                  </div>
+
+                  <div className="text-left">
+                    {game.homeTeam.rank && (
+                      <span className="text-xs font-semibold" style={{ color: "#64748b" }}>#{game.homeTeam.rank}</span>
+                    )}
+                    <div
+                      className="text-2xl font-black uppercase"
+                      style={{
+                        color: game.homeTeam.primaryColor,
+                        fontFamily: "var(--font-oswald), 'Oswald', sans-serif"
+                      }}
+                    >
+                      {game.homeTeam.shortName}
+                    </div>
+                    <div className="text-xs font-semibold mt-0.5" style={{ color: "#64748b" }}>
+                      {game.homeTeam.name}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs font-semibold mt-0.5" style={{ color: "#64748b" }}>
-                  {game.awayTeam.name}
+
+                {/* Betting lines */}
+                <div className="flex justify-center gap-3">
+                  {game.spread && (
+                    <div
+                      className="px-5 py-2 rounded-lg text-center"
+                      style={{
+                        background: "#0f2557",
+                        transform: "rotate(-1deg)"
+                      }}
+                    >
+                      <div className="text-[9px] text-slate-400 uppercase tracking-wider mb-0.5">Line</div>
+                      <div
+                        className="text-2xl font-black text-white"
+                        style={{ fontFamily: "var(--font-oswald), 'Oswald', sans-serif" }}
+                      >
+                        {game.spread}
+                      </div>
+                    </div>
+                  )}
+                  {game.total && (
+                    <div
+                      className="px-5 py-2 rounded-lg text-center"
+                      style={{
+                        background: "#B91C1C",
+                        transform: "rotate(1deg)"
+                      }}
+                    >
+                      <div className="text-[9px] text-red-200 uppercase tracking-wider mb-0.5">Total</div>
+                      <div
+                        className="text-2xl font-black text-white"
+                        style={{ fontFamily: "var(--font-oswald), 'Oswald', sans-serif" }}
+                      >
+                        {game.total}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="text-3xl font-black" style={{ color: "#0f2557" }}>
-                VS
-              </div>
-
-              <div className="text-left">
-                {game.homeTeam.rank && (
-                  <span className="text-xs font-semibold" style={{ color: "#64748b" }}>#{game.homeTeam.rank}</span>
+              {/* HOME TEAM LOGO - RIGHT (large, full height) */}
+              <div className="w-44 flex-shrink-0 flex items-center justify-center">
+                {homeLogo ? (
+                  <img
+                    src={`/logos/cbb/${homeLogo}`}
+                    alt={game.homeTeam.name}
+                    className="w-40 h-40 object-contain"
+                    style={{ mixBlendMode: "multiply" }}
+                  />
+                ) : (
+                  <div
+                    className="w-36 h-36 rounded-full flex items-center justify-center text-5xl font-black border-2"
+                    style={{
+                      backgroundColor: game.homeTeam.secondaryColor || "#ffffff",
+                      color: game.homeTeam.primaryColor,
+                      borderColor: game.homeTeam.primaryColor + "40",
+                    }}
+                  >
+                    {game.homeTeam.shortName.charAt(0)}
+                  </div>
                 )}
-                <div
-                  className="text-2xl font-black uppercase"
-                  style={{
-                    color: game.homeTeam.primaryColor,
-                    fontFamily: "var(--font-oswald), 'Oswald', sans-serif"
-                  }}
-                >
-                  {game.homeTeam.shortName}
-                </div>
-                <div className="text-xs font-semibold mt-0.5" style={{ color: "#64748b" }}>
-                  {game.homeTeam.name}
-                </div>
               </div>
             </div>
 
-            {/* Betting lines - styled like ticket price */}
-            <div className="flex justify-center gap-4 mb-6">
-              {game.spread && (
-                <div
-                  className="px-6 py-3 rounded-lg text-center"
-                  style={{
-                    background: "#0f2557",
-                    transform: "rotate(-1deg)"
-                  }}
-                >
-                  <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Line</div>
-                  <div
-                    className="text-3xl font-black text-white"
-                    style={{ fontFamily: "var(--font-oswald), 'Oswald', sans-serif" }}
-                  >
-                    {game.spread}
-                  </div>
-                </div>
-              )}
-              {game.total && (
-                <div
-                  className="px-6 py-3 rounded-lg text-center"
-                  style={{
-                    background: "#B91C1C",
-                    transform: "rotate(1deg)"
-                  }}
-                >
-                  <div className="text-[10px] text-red-200 uppercase tracking-wider mb-1">Total</div>
-                  <div
-                    className="text-3xl font-black text-white"
-                    style={{ fontFamily: "var(--font-oswald), 'Oswald', sans-serif" }}
-                  >
-                    {game.total}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Venue and time */}
+            {/* Venue and time - below */}
             <div
-              className="flex items-center justify-between pt-4 border-t-2 border-dashed"
+              className="flex items-center justify-between pt-3 mt-3 border-t-2 border-dashed"
               style={{ borderColor: "#d4d0c8" }}
             >
               <div className="text-sm" style={{ color: "#64748b" }}>
@@ -1549,8 +2209,8 @@ function GameDetailDashboard({ game, currentDate }: { game: CBBGame; currentDate
 
       {/* Teams Side by Side */}
       <div className="grid md:grid-cols-2 gap-4">
-        <TeamCard team={game.awayTeam} isHome={false} />
-        <TeamCard team={game.homeTeam} isHome={true} />
+        <TeamCard team={game.awayTeam} isHome={false} logoLookup={logoLookup} />
+        <TeamCard team={game.homeTeam} isHome={true} logoLookup={logoLookup} />
       </div>
 
       {/* KDE Distribution Comparisons - Stacked */}
@@ -1595,6 +2255,14 @@ export default function CBBDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [selectedConferences, setSelectedConferences] = useState<Set<string>>(new Set());
   const [chaosFilter, setChaosFilter] = useState<"all" | "low" | "teaser">("all");
+  const [logoLookup, setLogoLookup] = useState<Map<string, string>>(new Map());
+
+  // Load team logos on mount
+  useEffect(() => {
+    fetchTeamLogos().then((mapping) => {
+      setLogoLookup(createLogoLookup(mapping));
+    });
+  }, []);
 
   // Derive unique conferences from loaded games, sorted alphabetically
   const conferences = useMemo(() => {
@@ -1605,6 +2273,13 @@ export default function CBBDashboard() {
     });
     return Array.from(confSet).sort();
   }, [games]);
+
+  // Helper to get combined spread predictability (average of both teams)
+  const getCombinedSpreadPredictability = (game: CBBGame): number => {
+    const homePred = game.homeTeam.spreadDistribution?.predictability ?? 0;
+    const awayPred = game.awayTeam.spreadDistribution?.predictability ?? 0;
+    return (homePred + awayPred) / 2;
+  };
 
   // Filter games: conference filter + chaos/teaser filter
   const filteredGames = useMemo(() => {
@@ -1619,7 +2294,10 @@ export default function CBBDashboard() {
     if (chaosFilter === "low") {
       filtered = filtered.filter((g) => g.chaosRating != null && g.chaosRating <= 2);
     } else if (chaosFilter === "teaser") {
-      filtered = filtered.filter((g) => g.teaserUnder10Prob != null && g.teaserUnder10Prob >= 0.85);
+      // Filter by combined spread predictability >= 60% (average) and sort by highest
+      filtered = filtered
+        .filter((g) => getCombinedSpreadPredictability(g) >= 60)
+        .sort((a, b) => getCombinedSpreadPredictability(b) - getCombinedSpreadPredictability(a));
     }
     return filtered;
   }, [games, selectedConferences, chaosFilter]);
@@ -1876,29 +2554,18 @@ export default function CBBDashboard() {
                 );
               })}
 
-              {/* Chaos / Teaser filters */}
+              {/* High Predictability filter */}
               <div className="w-px h-6 bg-slate-300 mx-1" />
-              <button
-                onClick={() => setChaosFilter(chaosFilter === "low" ? "all" : "low")}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
-                  chaosFilter === "low"
-                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md"
-                    : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
-                )}
-              >
-                Low Chaos
-              </button>
               <button
                 onClick={() => setChaosFilter(chaosFilter === "teaser" ? "all" : "teaser")}
                 className={cn(
                   "px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border",
                   chaosFilter === "teaser"
-                    ? "bg-amber-600 text-white border-amber-600 shadow-md"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md"
                     : "bg-white/70 text-slate-600 border-slate-200 hover:bg-white hover:border-slate-300"
                 )}
               >
-                Teaser Friendly
+                High Predictability
               </button>
             </div>
           </div>
@@ -1948,12 +2615,14 @@ export default function CBBDashboard() {
                   game={game}
                   isSelected={game.id === selectedGameId}
                   onClick={() => setSelectedGameId(game.id)}
+                  logoLookup={logoLookup}
+                  showPredictability={chaosFilter === "teaser"}
                 />
               ))}
             </div>
 
             {/* Selected Game Detail */}
-            {selectedGame && <GameDetailDashboard game={selectedGame} currentDate={formatDateForAPI(currentDate)} />}
+            {selectedGame && <GameDetailDashboard game={selectedGame} currentDate={formatDateForAPI(currentDate)} logoLookup={logoLookup} />}
           </div>
         )}
 

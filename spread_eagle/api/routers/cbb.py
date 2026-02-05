@@ -279,10 +279,12 @@ async def get_games_by_date(
             g.home_team,
             g.home_conference,
             g.home_points,
+            ht.abbreviation as home_abbrev,
             g.away_team_id,
             g.away_team,
             g.away_conference,
             g.away_points,
+            at.abbreviation as away_abbrev,
             g.venue,
             g.status,
             bl.spread,
@@ -296,6 +298,8 @@ async def get_games_by_date(
             CONCAT(COALESCE(aats.ats_wins, 0), '-', COALESCE(aats.ats_losses, 0), '-', COALESCE(aats.ats_pushes, 0)) as away_ats_record,
             CONCAT(COALESCE(aou.ou_overs, 0), '-', COALESCE(aou.ou_unders, 0), '-', COALESCE(aou.ou_pushes, 0)) as away_ou_record
         FROM cbb.games g
+        LEFT JOIN cbb.teams ht ON g.home_team_id = ht.id
+        LEFT JOIN cbb.teams at ON g.away_team_id = at.id
         LEFT JOIN cbb.betting_lines bl
             ON g.id = bl.game_id
             AND bl.provider = 'Bovada'
@@ -358,7 +362,7 @@ async def get_games_by_date(
             startTime=start_time,
             home=TeamInfo(
                 name=row.home_team or "TBD",
-                short=_get_short_name(row.home_team),
+                short=row.home_abbrev or _get_short_name(row.home_team),
                 record=row.home_record,
                 conference=row.home_conference,
                 ats_record=home_ats if home_ats and home_ats != "0-0-0" else None,
@@ -366,7 +370,7 @@ async def get_games_by_date(
             ),
             away=TeamInfo(
                 name=row.away_team or "TBD",
-                short=_get_short_name(row.away_team),
+                short=row.away_abbrev or _get_short_name(row.away_team),
                 record=row.away_record,
                 conference=row.away_conference,
                 ats_record=away_ats if away_ats and away_ats != "0-0-0" else None,
@@ -501,6 +505,30 @@ class TeamDistributionData(BaseModel):
     predictability: float  # 0-100 score
 
 
+# =============================================================================
+# MARGIN THEATER MODELS (for interactive filtering of distributions)
+# =============================================================================
+
+class MarginDataPoint(BaseModel):
+    """Single margin with full situational context for Margin Theater."""
+    margin: float
+    isHome: bool
+    isFavorite: bool
+    isConference: bool
+    prevResult: Optional[str] = None  # "W", "L", or None
+    restDays: Optional[int] = None    # 0, 1, 2, 3 (capped at 3)
+
+
+class TheaterDistributionData(BaseModel):
+    """Rich distribution data for Margin Theater feature."""
+    dataPoints: List[MarginDataPoint]
+    # Baseline stats (unfiltered) for reference
+    mean: float
+    std: float
+    predictability: float
+    count: int
+
+
 class DashboardTeamData(BaseModel):
     """Complete team data for dashboard card."""
     name: str
@@ -534,6 +562,9 @@ class DashboardTeamData(BaseModel):
     # Distribution data for KDE graphs (shown below last 5 games)
     spreadDistribution: Optional[TeamDistributionData] = None
     totalDistribution: Optional[TeamDistributionData] = None
+    # Margin Theater data (interactive filter distributions)
+    spreadTheater: Optional[TheaterDistributionData] = None
+    totalTheater: Optional[TheaterDistributionData] = None
 
 
 class DashboardGame(BaseModel):
@@ -807,6 +838,79 @@ def _get_team_distribution(db: Session, team_id: int, margin_type: str) -> Optio
     )
 
 
+def _get_theater_distribution(
+    db: Session,
+    team_id: int,
+    margin_type: str  # "spread" or "total"
+) -> Optional[TheaterDistributionData]:
+    """
+    Get rich margin data from int_cbb__margin_theater for interactive filtering.
+
+    Args:
+        db: Database session
+        team_id: Team ID
+        margin_type: "spread" for cover_margin, "total" for total_margin
+
+    Returns:
+        TheaterDistributionData with data points and baseline stats, or None if insufficient data
+    """
+    margin_col = "cover_margin" if margin_type == "spread" else "total_margin"
+
+    query = text(f"""
+        SELECT
+            {margin_col} as margin,
+            is_home,
+            is_favorite,
+            is_conference_game,
+            prev_game_result,
+            LEAST(rest_days, 3) as rest_days
+        FROM intermediate_cbb.int_cbb__margin_theater
+        WHERE team_id = :team_id
+          AND season = 2026
+          AND {margin_col} IS NOT NULL
+        ORDER BY game_date
+    """)
+
+    try:
+        result = db.execute(query, {"team_id": team_id}).fetchall()
+    except Exception:
+        return None
+
+    if len(result) < 5:
+        return None
+
+    data_points = [
+        MarginDataPoint(
+            margin=float(r.margin),
+            isHome=bool(r.is_home),
+            isFavorite=bool(r.is_favorite),
+            isConference=bool(r.is_conference_game) if r.is_conference_game is not None else False,
+            prevResult=r.prev_game_result,
+            restDays=int(r.rest_days) if r.rest_days is not None else None
+        )
+        for r in result
+    ]
+
+    margins = [dp.margin for dp in data_points]
+    margins_arr = np.array(margins)
+    mean = float(np.mean(margins_arr))
+    std = float(np.std(margins_arr))
+    within_10 = float(np.mean(np.abs(margins_arr) < 10))
+
+    # Predictability score (simplified formula: 50% std, 50% within_10)
+    std_score = max(0, min(100, 100 - (std - 5) * (100 / 15)))
+    w10_score = within_10 * 100
+    predictability = std_score * 0.5 + w10_score * 0.5
+
+    return TheaterDistributionData(
+        dataPoints=data_points,
+        mean=round(mean, 2),
+        std=round(std, 2),
+        predictability=round(predictability, 1),
+        count=len(data_points)
+    )
+
+
 @router.get(
     "/dashboard",
     response_model=DashboardResponse,
@@ -851,6 +955,7 @@ async def get_dashboard_games(
 
             -- Home team
             home_team,
+            home_abbrev,
             home_team_id,
             home_conference,
             home_record,
@@ -865,6 +970,7 @@ async def get_dashboard_games(
 
             -- Away team
             away_team,
+            away_abbrev,
             away_team_id,
             away_conference,
             away_record,
@@ -1023,14 +1129,17 @@ async def get_dashboard_games(
             except ValueError:
                 pass  # Keep original format if parsing fails
 
-        # Format spread string
+        # Format spread string (use abbreviation from database if available)
+        home_short = getattr(row, 'home_abbrev', None) or _get_short_name(row.home_team)
+        away_short = getattr(row, 'away_abbrev', None) or _get_short_name(row.away_team)
+
         spread_str = None
         if row.spread is not None:
             spread_val = float(row.spread)
             if spread_val < 0:
-                spread_str = f"{_get_short_name(row.home_team)} {spread_val}"
+                spread_str = f"{home_short} {spread_val}"
             elif spread_val > 0:
-                spread_str = f"{_get_short_name(row.away_team)} -{abs(spread_val)}"
+                spread_str = f"{away_short} -{abs(spread_val)}"
             else:
                 spread_str = "PICK"
 
@@ -1111,6 +1220,12 @@ async def get_dashboard_games(
         away_spread_dist = _get_team_distribution(db, row.away_team_id, "spread")
         away_total_dist = _get_team_distribution(db, row.away_team_id, "total")
 
+        # Fetch Margin Theater distribution data (interactive filtering)
+        home_spread_theater = _get_theater_distribution(db, row.home_team_id, "spread")
+        home_total_theater = _get_theater_distribution(db, row.home_team_id, "total")
+        away_spread_theater = _get_theater_distribution(db, row.away_team_id, "spread")
+        away_total_theater = _get_theater_distribution(db, row.away_team_id, "total")
+
         # Get full team info (display name with mascot, colors)
         home_display_name, home_primary, home_secondary = _get_team_info_from_db(db, row.home_team)
         away_display_name, away_primary, away_secondary = _get_team_info_from_db(db, row.away_team)
@@ -1118,7 +1233,7 @@ async def get_dashboard_games(
         # Build home team data (records are already formatted as strings like "12-5")
         home_team = DashboardTeamData(
             name=home_display_name,
-            shortName=_get_short_name(row.home_team),
+            shortName=home_short,
             primaryColor=home_primary,
             secondaryColor=home_secondary,
             record=row.home_record or "0-0",
@@ -1143,12 +1258,14 @@ async def get_dashboard_games(
             overUnderProfile=home_ou_profile,
             spreadDistribution=home_spread_dist,
             totalDistribution=home_total_dist,
+            spreadTheater=home_spread_theater,
+            totalTheater=home_total_theater,
         )
 
         # Build away team data
         away_team = DashboardTeamData(
             name=away_display_name,
-            shortName=_get_short_name(row.away_team),
+            shortName=away_short,
             primaryColor=away_primary,
             secondaryColor=away_secondary,
             record=row.away_record or "0-0",
@@ -1173,6 +1290,8 @@ async def get_dashboard_games(
             overUnderProfile=away_ou_profile,
             spreadDistribution=away_spread_dist,
             totalDistribution=away_total_dist,
+            spreadTheater=away_spread_theater,
+            totalTheater=away_total_theater,
         )
 
         # ---- Game-level chaos and teaser calculations ----
